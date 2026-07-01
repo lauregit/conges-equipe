@@ -1,0 +1,8 @@
+<svg viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="CertiDeal">
+  <!-- "C" ring in CertiDeal navy, open toward the right -->
+  <path d="M96 32 A46 46 0 1 0 96 96"
+        fill="none" stroke="#1c1743" stroke-width="17" stroke-linecap="round" />
+  <!-- Blue check nested in the C -->
+  <path d="M42 66 L57 81 L90 39"
+        fill="none" stroke="#4f9fd6" stroke-width="15" stroke-linecap="round" stroke-linejoin="round" />
+</svg>

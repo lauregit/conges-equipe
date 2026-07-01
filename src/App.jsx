@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { fetchLeaves, addLeave, deleteLeave } from './api'
 import { ADMIN_NAME } from './employees'
 import Calendar from './components/Calendar'
@@ -11,12 +11,19 @@ export default function App() {
   const [leaves, setLeaves] = useState([])
   const [view, setView] = useState('calendar')
   const [notification, setNotification] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState(null)
+  const notifTimer = useRef(null)
 
   const loadLeaves = useCallback(async () => {
     try {
       setLeaves(await fetchLeaves())
+      setLoadError(null)
     } catch (err) {
       console.error(err)
+      setLoadError(err.message || 'Erreur de chargement')
+    } finally {
+      setLoading(false)
     }
   }, [])
 
@@ -36,6 +43,7 @@ export default function App() {
   }, [loadLeaves])
 
   const isAdmin = user === ADMIN_NAME
+  const myLeaves = leaves.filter(l => l.employee === user)
 
   function handleLogin(name) {
     setUser(name)
@@ -48,23 +56,37 @@ export default function App() {
     setView('calendar')
   }
 
+  // Throws on failure so LeaveForm can keep the form open and re-enable submit.
   async function handleSubmitLeave(leave) {
-    await addLeave({ employee: user, ...leave })
-    await loadLeaves()
-    showNotification('Congé enregistré ✓')
-    setView('calendar')
+    try {
+      await addLeave({ employee: user, ...leave })
+      await loadLeaves()
+      showNotification('Congé enregistré ✓')
+      setView('calendar')
+    } catch (err) {
+      showNotification(err.message || "Échec de l'enregistrement", 'error')
+      throw err
+    }
   }
 
   async function handleDeleteLeave(id) {
-    await deleteLeave(id)
-    await loadLeaves()
-    showNotification('Congé supprimé')
+    try {
+      await deleteLeave(id, user)
+      await loadLeaves()
+      showNotification('Congé supprimé')
+    } catch (err) {
+      showNotification(err.message || 'Échec de la suppression', 'error')
+    }
   }
 
-  function showNotification(msg) {
-    setNotification(msg)
-    setTimeout(() => setNotification(null), 3000)
+  function showNotification(msg, type = 'success') {
+    if (notifTimer.current) clearTimeout(notifTimer.current)
+    setNotification({ msg, type })
+    notifTimer.current = setTimeout(() => setNotification(null), type === 'error' ? 5000 : 3000)
   }
+
+  // Clear a pending notification timer on unmount.
+  useEffect(() => () => { if (notifTimer.current) clearTimeout(notifTimer.current) }, [])
 
   if (!user) return <LoginScreen onLogin={handleLogin} />
 
@@ -72,10 +94,10 @@ export default function App() {
     <div className="app">
       <header className="app-header">
         <div className="header-left">
-          <span className="logo-icon">🏖️</span>
+          <img className="logo-icon" src="/logo.svg" alt="CertiDeal" width="34" height="34" />
           <div>
             <div className="app-title">Congés Équipe Marketing</div>
-            <div className="app-sub">Certideal</div>
+            <div className="app-sub">CertiDeal</div>
           </div>
         </div>
         <div className="header-right">
@@ -93,18 +115,36 @@ export default function App() {
         </div>
       </header>
 
-      {notification && <div className="notification">{notification}</div>}
+      {notification && (
+        <div className={`notification notification-${notification.type}`} role="status">
+          {notification.msg}
+        </div>
+      )}
+
+      {loadError && view === 'calendar' && (
+        <div className="banner banner-error" role="alert">
+          ⚠️ {loadError} · <button className="banner-retry" onClick={loadLeaves}>Réessayer</button>
+        </div>
+      )}
 
       {view === 'calendar' && (
-        <Calendar
-          leaves={leaves}
-          currentUser={user}
-          isAdmin={isAdmin}
-          onDelete={handleDeleteLeave}
-        />
+        loading && leaves.length === 0 ? (
+          <div className="loading-state">Chargement des congés…</div>
+        ) : (
+          <Calendar
+            leaves={leaves}
+            currentUser={user}
+            isAdmin={isAdmin}
+            onDelete={handleDeleteLeave}
+          />
+        )
       )}
       {view === 'request' && (
-        <LeaveForm onSubmit={handleSubmitLeave} onCancel={() => setView('calendar')} />
+        <LeaveForm
+          myLeaves={myLeaves}
+          onSubmit={handleSubmitLeave}
+          onCancel={() => setView('calendar')}
+        />
       )}
     </div>
   )
