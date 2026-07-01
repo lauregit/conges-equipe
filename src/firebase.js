@@ -2,12 +2,13 @@ import { initializeApp } from 'firebase/app'
 import { getFirestore } from 'firebase/firestore'
 
 const firebaseConfig = {
-  apiKey: "AIzaSyPlaceholderKeyReplaceWithYours",
+  apiKey: "AIzaSyCJxuSUyIbaaKa8xfZrHaXW_ov8YLT7xFg",
   authDomain: "conges-certideal.firebaseapp.com",
   projectId: "conges-certideal",
-  storageBucket: "conges-certideal.appspot.com",
-  messagingSenderId: "000000000000",
-  appId: "1:000000000000:web:000000000000000000000000"
+  storageBucket: "conges-certideal.firebasestorage.app",
+  messagingSenderId: "585468888385",
+  appId: "1:585468888385:web:ced2926afcd93e1aa20dc0",
+  measurementId: "G-8S7RRZDR8G"
 }
 
 const app = initializeApp(firebaseConfig)
