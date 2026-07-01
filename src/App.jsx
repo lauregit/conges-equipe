@@ -1,6 +1,5 @@
-import { useState, useEffect } from 'react'
-import { collection, onSnapshot, addDoc, deleteDoc, doc, query, orderBy } from 'firebase/firestore'
-import { db } from './firebase'
+import { useState, useEffect, useCallback } from 'react'
+import { fetchLeaves, addLeave, deleteLeave } from './api'
 import { ADMIN_NAME } from './employees'
 import Calendar from './components/Calendar'
 import LoginScreen from './components/LoginScreen'
@@ -13,13 +12,28 @@ export default function App() {
   const [view, setView] = useState('calendar')
   const [notification, setNotification] = useState(null)
 
-  useEffect(() => {
-    const q = query(collection(db, 'leaves'), orderBy('startDate'))
-    const unsub = onSnapshot(q, (snap) => {
-      setLeaves(snap.docs.map(d => ({ id: d.id, ...d.data() })))
-    })
-    return unsub
+  const loadLeaves = useCallback(async () => {
+    try {
+      setLeaves(await fetchLeaves())
+    } catch (err) {
+      console.error(err)
+    }
   }, [])
+
+  // No push channel on Postgres like Firestore's onSnapshot. Instead of
+  // polling, refresh whenever someone connects (mount) or returns to the tab.
+  useEffect(() => {
+    loadLeaves()
+    const onFocus = () => {
+      if (document.visibilityState === 'visible') loadLeaves()
+    }
+    window.addEventListener('focus', onFocus)
+    document.addEventListener('visibilitychange', onFocus)
+    return () => {
+      window.removeEventListener('focus', onFocus)
+      document.removeEventListener('visibilitychange', onFocus)
+    }
+  }, [loadLeaves])
 
   const isAdmin = user === ADMIN_NAME
 
@@ -35,17 +49,15 @@ export default function App() {
   }
 
   async function handleSubmitLeave(leave) {
-    await addDoc(collection(db, 'leaves'), {
-      employee: user,
-      ...leave,
-      createdAt: new Date().toISOString(),
-    })
+    await addLeave({ employee: user, ...leave })
+    await loadLeaves()
     showNotification('Congé enregistré ✓')
     setView('calendar')
   }
 
   async function handleDeleteLeave(id) {
-    await deleteDoc(doc(db, 'leaves', id))
+    await deleteLeave(id)
+    await loadLeaves()
     showNotification('Congé supprimé')
   }
 
