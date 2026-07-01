@@ -2,13 +2,11 @@ import { useState } from 'react'
 import {
   startOfMonth, endOfMonth, eachDayOfInterval,
   startOfWeek, endOfWeek, addMonths, subMonths,
-  format, isSameMonth, isWeekend, isToday,
-  parseISO, isWithinInterval
+  format, isSameMonth, isWeekend, isToday, parseISO
 } from 'date-fns'
 import { fr } from 'date-fns/locale'
-import { EMPLOYEES, ADMIN_NAME } from '../employees'
-
-const ALL_EMPLOYEES = [ADMIN_NAME, ...EMPLOYEES]
+import { ALL_EMPLOYEES } from '../employees'
+import { isDateInRange, leaveOverlapsMonth } from '../utils/dateHelpers'
 
 const TYPE_COLORS = {
   conge_paye: { bg: '#bfdbfe', label: 'CP' },
@@ -20,7 +18,7 @@ const TYPE_COLORS = {
 function isOnLeave(employee, date, leaves) {
   const d = format(date, 'yyyy-MM-dd')
   return leaves.find(l =>
-    l.employee === employee && d >= l.startDate && d <= l.endDate
+    l.employee === employee && isDateInRange(d, l.startDate, l.endDate)
   )
 }
 
@@ -43,13 +41,11 @@ export default function Calendar({ leaves, currentUser, isAdmin, onDelete }) {
 
   const DAY_LABELS = ['Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam', 'Dim']
 
-  // Leaves in this month
-  const monthStr = format(month, 'yyyy-MM')
-  const monthLeaves = leaves.filter(l =>
-    l.startDate.startsWith(monthStr) ||
-    l.endDate.startsWith(monthStr) ||
-    (l.startDate < monthStr + '-01' && l.endDate > monthStr + '-31')
-  )
+  // Leaves overlapping this month (correctly includes multi-month leaves,
+  // e.g. 15 Jan → 20 Feb now counts in February).
+  const monthStartStr = format(monthStart, 'yyyy-MM-dd')
+  const monthEndStr = format(monthEnd, 'yyyy-MM-dd')
+  const monthLeaves = leaves.filter(l => leaveOverlapsMonth(l, monthStartStr, monthEndStr))
 
   const myLeaves = leaves.filter(l => l.employee === currentUser)
 
@@ -63,22 +59,22 @@ export default function Calendar({ leaves, currentUser, isAdmin, onDelete }) {
           </span>
         </div>
         <div className="nav-buttons">
-          <button onClick={() => setMonth(subMonths(month, 1))}>◀ Préc.</button>
-          <button onClick={() => setMonth(new Date())}>Aujourd'hui</button>
-          <button onClick={() => setMonth(addMonths(month, 1))}>Suiv. ▶</button>
+          <button aria-label="Mois précédent" onClick={() => setMonth(subMonths(month, 1))}>◀ Préc.</button>
+          <button aria-label="Aller au mois actuel" onClick={() => setMonth(new Date())}>Aujourd'hui</button>
+          <button aria-label="Mois suivant" onClick={() => setMonth(addMonths(month, 1))}>Suiv. ▶</button>
         </div>
       </div>
 
       <div className="calendar-grid">
         {/* Per-week grid */}
-        {weeks.map((week, wi) => (
-          <div key={wi}>
+        {weeks.map((week) => (
+          <div key={format(week[0], 'yyyy-MM-dd')}>
             {/* Week day headers */}
             <div className="week-header">
               <div className="week-label">S{format(week[0], 'w')}</div>
               {week.map((day, di) => (
                 <div
-                  key={di}
+                  key={format(day, 'yyyy-MM-dd')}
                   className={`week-day-header ${isWeekend(day) ? 'weekend' : ''}`}
                 >
                   {DAY_LABELS[di]} {format(day, 'd')}
@@ -104,7 +100,7 @@ export default function Calendar({ leaves, currentUser, isAdmin, onDelete }) {
 
                     return (
                       <div
-                        key={di}
+                        key={format(day, 'yyyy-MM-dd')}
                         className={`day-cell ${isWeekend(day) ? 'weekend' : ''} ${isToday(day) ? 'today' : ''} ${leave ? 'on-leave' : ''} ${leave && emp === currentUser ? 'is-mine' : ''}`}
                         style={leave && inMonth ? { background: colors.bg } : {}}
                         title={leave ? `${leave.type}${leave.note ? ' — ' + leave.note : ''}` : ''}
@@ -153,8 +149,13 @@ export default function Calendar({ leaves, currentUser, isAdmin, onDelete }) {
                   {(isAdmin || l.employee === currentUser) && (
                     <button
                       className="btn-danger"
-                      onClick={() => onDelete(l.id)}
+                      onClick={() => {
+                        if (window.confirm(`Supprimer le congé de ${l.employee} ? Action irréversible.`)) {
+                          onDelete(l.id)
+                        }
+                      }}
                       title="Supprimer"
+                      aria-label={`Supprimer le congé de ${l.employee}`}
                     >
                       ✕
                     </button>

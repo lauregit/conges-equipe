@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { format } from 'date-fns'
+import { doLeavesOverlap } from '../utils/dateHelpers'
 
 const LEAVE_TYPES = [
   { key: 'conge_paye', label: '🏖️ Congé payé' },
@@ -8,7 +9,7 @@ const LEAVE_TYPES = [
   { key: 'autre', label: '📋 Autre' },
 ]
 
-export default function LeaveForm({ onSubmit, onCancel }) {
+export default function LeaveForm({ onSubmit, onCancel, myLeaves = [] }) {
   const today = format(new Date(), 'yyyy-MM-dd')
   const [startDate, setStartDate] = useState(today)
   const [endDate, setEndDate] = useState(today)
@@ -16,12 +17,21 @@ export default function LeaveForm({ onSubmit, onCancel }) {
   const [note, setNote] = useState('')
   const [submitting, setSubmitting] = useState(false)
 
+  const validRange = startDate && endDate && startDate <= endDate
+  const overlaps = validRange && myLeaves.some(l => doLeavesOverlap(startDate, endDate, l))
+
   async function handleSubmit(e) {
     e.preventDefault()
-    if (!startDate || !endDate || startDate > endDate) return
+    if (!validRange) return
     setSubmitting(true)
-    await onSubmit({ startDate, endDate, type, note })
-    setSubmitting(false)
+    try {
+      await onSubmit({ startDate, endDate, type, note })
+      // On success the parent navigates back to the calendar (unmounts us),
+      // so we intentionally don't reset `submitting` here.
+    } catch {
+      // Parent shows the error toast; keep the form open and re-enable submit.
+      setSubmitting(false)
+    }
   }
 
   return (
@@ -37,6 +47,7 @@ export default function LeaveForm({ onSubmit, onCancel }) {
                   key={lt.key}
                   type="button"
                   className={`leave-type-btn ${type === lt.key ? 'selected' : ''}`}
+                  aria-pressed={type === lt.key}
                   onClick={() => setType(lt.key)}
                 >
                   {lt.label}
@@ -70,6 +81,12 @@ export default function LeaveForm({ onSubmit, onCancel }) {
               />
             </div>
           </div>
+
+          {overlaps && (
+            <div className="banner banner-warning" role="alert">
+              ⚠️ Vous avez déjà un congé sur ces dates.
+            </div>
+          )}
 
           <div className="form-group">
             <label>Note (optionnel)</label>
