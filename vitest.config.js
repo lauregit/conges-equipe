@@ -7,6 +7,8 @@ import { defineConfig } from 'vitest/config'
 export default defineConfig({
   test: {
     environment: 'node',
-    include: ['src/**/*.test.js', 'api/**/*.test.js'],
+    // API tests live in tests/ (NOT api/ — Vercel would deploy any
+    // non-underscore .js file under api/ as a broken serverless function).
+    include: ['src/**/*.test.js', 'tests/**/*.test.js'],
   },
 })

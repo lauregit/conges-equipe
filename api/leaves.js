@@ -1,26 +1,24 @@
 import { neon } from '@neondatabase/serverless';
-import { ALL_EMPLOYEES, LEAVE_TYPES, ADMIN_NAME } from '../src/employees.js';
+import { LEAVE_TYPES, DECLARED_TYPES } from '../src/constants.js';
+import { sendEmail, requestEmail, decisionEmail } from './_notify.js';
 
-// Serverless function backing the leave calendar.
-// Neon (Postgres) replaces the previous Firebase Firestore `leaves` collection.
+// Serverless function backing the leave calendar (Neon Postgres).
 // Routes (all on /api/leaves):
-//   GET                       -> list every leave, ordered by start date
-//   POST  {employee,startDate,endDate,type,note}  -> insert one (validated)
-//   DELETE ?id=<id>&user=<name> -> delete one (owner or admin only)
+//   GET                        -> every leave with its status
+//   POST  {employee,startDate,endDate,type,note}
+//         -> maladie is DECLARED (auto-approved, managers notified FYI);
+//            other types create a PENDING request (managers notified to act)
+//   PATCH ?id=<id>  {user, action:'approve'|'reject'}
+//         -> decide a pending request (team manager or admin only)
+//   DELETE ?id=<id>&user=<name> -> owner or admin only
 //
-// This endpoint is public (CORS *, no token auth by design for an internal
-// tool), so all writes are validated server-side: the frontend cannot be
-// trusted to be the only caller. start/end dates are stored as DATE and
-// returned as 'yyyy-MM-dd' strings so the frontend's string comparisons keep
-// working unchanged.
+// The endpoint is public (internal tool, name-pick identity), so every write
+// is validated server-side against the conges_employees roster in the DB.
+// Dates are 'yyyy-MM-dd' strings end to end.
 
-const ROSTER = new Set(ALL_EMPLOYEES);
-const TYPES = new Set(LEAVE_TYPES);
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const MAX_NOTE = 200;
 
-// Cache keyed on the URL so a missing/changed DATABASE_URL is re-evaluated
-// (avoids a stale connection surviving env changes, and keeps tests robust).
 let _sql;
 let _sqlUrl;
 function getSql() {
@@ -49,14 +47,40 @@ const SELECT = `
          to_char(end_date,   'YYYY-MM-DD') AS "endDate",
          type,
          note,
+         status,
+         decided_by AS "decidedBy",
          to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SSOF') AS "createdAt"
   FROM conges_leaves
 `;
 
-// `sqlOverride` is only passed by unit tests; Vercel calls handler(req, res).
-export default async function handler(req, res, sqlOverride) {
+// Emails of the people who should hear about a team's requests: the team's
+// active managers, plus active admins (they can approve anything).
+async function approverEmails(sql, team) {
+  const rows = await sql(
+    `SELECT email FROM conges_employees
+     WHERE active AND email IS NOT NULL
+       AND (role = 'admin' OR (role = 'manager' AND team = $1))`,
+    [team]
+  );
+  return rows.map(r => r.email);
+}
+
+function parseBody(req, res) {
+  if (typeof req.body === 'string') {
+    try {
+      return JSON.parse(req.body || '{}');
+    } catch {
+      res.status(400).json({ error: 'JSON invalide' });
+      return null;
+    }
+  }
+  return req.body || {};
+}
+
+// `sqlOverride`/`notifyOverride` are only passed by unit tests.
+export default async function handler(req, res, sqlOverride, notifyOverride) {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
   if (req.method === 'OPTIONS') {
@@ -66,6 +90,7 @@ export default async function handler(req, res, sqlOverride) {
 
   try {
     const sql = sqlOverride || getSql();
+    const notify = notifyOverride || sendEmail;
 
     if (req.method === 'GET') {
       const rows = await sql(SELECT + ' ORDER BY start_date, id');
@@ -74,17 +99,8 @@ export default async function handler(req, res, sqlOverride) {
     }
 
     if (req.method === 'POST') {
-      let body;
-      if (typeof req.body === 'string') {
-        try {
-          body = JSON.parse(req.body || '{}');
-        } catch {
-          res.status(400).json({ error: 'JSON invalide' });
-          return;
-        }
-      } else {
-        body = req.body || {};
-      }
+      const body = parseBody(req, res);
+      if (!body) return;
       const { employee, startDate, endDate, type } = body;
 
       if (!employee || !startDate || !endDate || !type) {
@@ -95,11 +111,7 @@ export default async function handler(req, res, sqlOverride) {
         res.status(400).json({ error: 'La note doit être du texte' });
         return;
       }
-      if (!ROSTER.has(employee)) {
-        res.status(400).json({ error: 'Employé inconnu' });
-        return;
-      }
-      if (!TYPES.has(type)) {
+      if (!LEAVE_TYPES.includes(type)) {
         res.status(400).json({ error: 'Type de congé invalide' });
         return;
       }
@@ -111,14 +123,106 @@ export default async function handler(req, res, sqlOverride) {
         res.status(400).json({ error: 'La date de début doit précéder la date de fin' });
         return;
       }
+
+      const emp = (await sql(
+        `SELECT name, team FROM conges_employees WHERE name = $1 AND active`,
+        [employee]
+      ))[0];
+      if (!emp) {
+        res.status(400).json({ error: 'Employé inconnu' });
+        return;
+      }
+
       const note = (body.note || '').trim().slice(0, MAX_NOTE) || null;
+      const declared = DECLARED_TYPES.includes(type);
+
+      // Approval is OPT-IN per team: a request only goes pending when the
+      // team has an active manager to decide it. With no manager configured
+      // the historic behavior is kept — the leave is recorded immediately.
+      const managers = declared ? [] : await sql(
+        `SELECT 1 FROM conges_employees WHERE role = 'manager' AND team = $1 AND active`,
+        [emp.team]
+      );
+      const needsApproval = !declared && managers.length > 0;
+      const status = needsApproval ? 'pending' : 'approved';
 
       const rows = await sql(
-        `INSERT INTO conges_leaves (employee, start_date, end_date, type, note)
-         VALUES ($1, $2, $3, $4, $5) RETURNING id::text`,
-        [employee, startDate, endDate, type, note]
+        `INSERT INTO conges_leaves (employee, start_date, end_date, type, note, status)
+         VALUES ($1, $2, $3, $4, $5, $6) RETURNING id::text`,
+        [employee, startDate, endDate, type, note, status]
       );
-      res.status(201).json({ id: rows[0].id });
+
+      // Best-effort notification to the team's approvers.
+      const to = await approverEmails(sql, emp.team);
+      if (to.length > 0) {
+        const leave = { employee, startDate, endDate, type, note };
+        const mode = declared ? 'declared' : needsApproval ? 'pending' : 'recorded';
+        await notify({ to, ...requestEmail(leave, mode) });
+      }
+
+      res.status(201).json({ id: rows[0].id, status });
+      return;
+    }
+
+    if (req.method === 'PATCH') {
+      const id = req.query?.id;
+      const body = parseBody(req, res);
+      if (!body) return;
+      const { user, action } = body;
+
+      if (!id || !user || !['approve', 'reject'].includes(action)) {
+        res.status(400).json({ error: 'id, user et action (approve|reject) sont requis' });
+        return;
+      }
+
+      const leave = (await sql(SELECT + ' WHERE id = $1', [id]))[0];
+      if (!leave) {
+        res.status(404).json({ error: 'Demande introuvable' });
+        return;
+      }
+      if (leave.status !== 'pending') {
+        res.status(409).json({ error: 'Cette demande a déjà été traitée' });
+        return;
+      }
+
+      const actor = (await sql(
+        `SELECT name, team, role FROM conges_employees WHERE name = $1 AND active`,
+        [user]
+      ))[0];
+      const owner = (await sql(
+        `SELECT name, email, team FROM conges_employees WHERE name = $1`,
+        [leave.employee]
+      ))[0];
+
+      const isAdmin = actor?.role === 'admin';
+      const managesTeam = actor?.role === 'manager' && owner && actor.team === owner.team;
+      if (!actor || (!isAdmin && !managesTeam)) {
+        res.status(403).json({ error: 'Seul un manager de l’équipe ou un admin peut décider' });
+        return;
+      }
+      if (!isAdmin && actor.name === leave.employee) {
+        res.status(403).json({ error: 'Vous ne pouvez pas décider votre propre demande' });
+        return;
+      }
+
+      const status = action === 'approve' ? 'approved' : 'rejected';
+      // Atomic guard: only decide if still pending, so two concurrent
+      // decisions can't overwrite each other (the loser gets a 409).
+      const updated = await sql(
+        `UPDATE conges_leaves SET status = $2, decided_by = $3, decided_at = NOW()
+         WHERE id = $1 AND status = 'pending' RETURNING id`,
+        [id, status, user]
+      );
+      if (updated.length === 0) {
+        res.status(409).json({ error: 'Cette demande a déjà été traitée' });
+        return;
+      }
+
+      if (owner?.email) {
+        await notify({ to: owner.email, ...decisionEmail(leave, action, user) });
+      }
+
+      res.status(200).json({ ok: true, status });
       return;
     }
 
@@ -136,9 +240,14 @@ export default async function handler(req, res, sqlOverride) {
         return;
       }
       const owner = rows[0].employee;
-      if (user !== ADMIN_NAME && user !== owner) {
-        res.status(403).json({ error: 'Vous ne pouvez supprimer que vos propres congés' });
-        return;
+      if (user !== owner) {
+        const admins = user
+          ? await sql(`SELECT 1 FROM conges_employees WHERE name = $1 AND role = 'admin' AND active`, [user])
+          : [];
+        if (admins.length === 0) {
+          res.status(403).json({ error: 'Vous ne pouvez supprimer que vos propres congés' });
+          return;
+        }
       }
       await sql('DELETE FROM conges_leaves WHERE id = $1', [id]);
       res.status(200).json({ ok: true });

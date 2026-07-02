@@ -1,15 +1,11 @@
 import { useState } from 'react'
 import { format } from 'date-fns'
 import { doLeavesOverlap } from '../utils/dateHelpers'
+import { LEAVE_TYPES as TYPE_KEYS, TYPE_META, DECLARED_TYPES } from '../constants'
 
-const LEAVE_TYPES = [
-  { key: 'conge_paye', label: '🏖️ Congé payé' },
-  { key: 'rtt', label: '⚡ RTT' },
-  { key: 'maladie', label: '🤒 Maladie' },
-  { key: 'autre', label: '📋 Autre' },
-]
+const LEAVE_TYPES = TYPE_KEYS.map(key => ({ key, label: `${TYPE_META[key].emoji} ${TYPE_META[key].label}` }))
 
-export default function LeaveForm({ onSubmit, onCancel, myLeaves = [] }) {
+export default function LeaveForm({ onSubmit, onCancel, myLeaves = [], teamHasManager = false }) {
   const today = format(new Date(), 'yyyy-MM-dd')
   const [startDate, setStartDate] = useState(today)
   const [endDate, setEndDate] = useState(today)
@@ -17,8 +13,11 @@ export default function LeaveForm({ onSubmit, onCancel, myLeaves = [] }) {
   const [note, setNote] = useState('')
   const [submitting, setSubmitting] = useState(false)
 
+  const declared = DECLARED_TYPES.includes(type)
   const validRange = startDate && endDate && startDate <= endDate
-  const overlaps = validRange && myLeaves.some(l => doLeavesOverlap(startDate, endDate, l))
+  const overlaps = validRange && myLeaves.some(l =>
+    l.status !== 'rejected' && doLeavesOverlap(startDate, endDate, l)
+  )
 
   async function handleSubmit(e) {
     e.preventDefault()
@@ -88,6 +87,14 @@ export default function LeaveForm({ onSubmit, onCancel, myLeaves = [] }) {
             </div>
           )}
 
+          <div className="banner banner-info" role="note">
+            {declared
+              ? 'ℹ️ Une absence maladie est déclarée immédiatement — vos managers seront informés.'
+              : teamHasManager
+                ? 'ℹ️ Votre demande sera soumise à l’approbation de votre manager.'
+                : 'ℹ️ Le congé sera enregistré directement au calendrier.'}
+          </div>
+
           <div className="form-group">
             <label>Note (optionnel)</label>
             <input
@@ -104,7 +111,10 @@ export default function LeaveForm({ onSubmit, onCancel, myLeaves = [] }) {
               Annuler
             </button>
             <button type="submit" className="btn-primary" disabled={submitting}>
-              {submitting ? 'Enregistrement...' : 'Confirmer le congé'}
+              {submitting ? 'Enregistrement...'
+                : declared ? "Déclarer l'absence"
+                : teamHasManager ? 'Envoyer la demande'
+                : 'Confirmer le congé'}
             </button>
           </div>
         </form>
