@@ -21,6 +21,7 @@ export const EMPLOYEES = [
   "Clementine PITHON",
   "LYPIRIDOU SOFIA",
   "DOS REIS PEREIRA AMANDA",
+  "Yoann VALENSI",
 ]
 
 export const ADMIN_NAME = "Laure COHEN"

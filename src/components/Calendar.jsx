@@ -9,10 +9,10 @@ import { ALL_EMPLOYEES } from '../employees'
 import { isDateInRange, leaveOverlapsMonth } from '../utils/dateHelpers'
 
 const TYPE_COLORS = {
-  conge_paye: { bg: '#bfdbfe', label: 'CP' },
-  rtt: { bg: '#d9f99d', label: 'RTT' },
-  maladie: { bg: '#fecaca', label: '🤒' },
-  autre: { bg: '#e9d5ff', label: '...' },
+  conge_paye:       { bg: '#bfdbfe', label: 'CP' },
+  conge_sans_solde: { bg: '#fed7aa', label: 'CSS' },
+  teletravail:      { bg: '#d9f99d', label: '🏠' },
+  arret_maladie:    { bg: '#fecaca', label: '🤒' },
 }
 
 function isOnLeave(employee, date, leaves) {

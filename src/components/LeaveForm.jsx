@@ -4,9 +4,9 @@ import { doLeavesOverlap } from '../utils/dateHelpers'
 
 const LEAVE_TYPES = [
   { key: 'conge_paye', label: '🏖️ Congé payé' },
-  { key: 'rtt', label: '⚡ RTT' },
-  { key: 'maladie', label: '🤒 Maladie' },
-  { key: 'autre', label: '📋 Autre' },
+  { key: 'conge_sans_solde', label: '💸 Congé sans solde' },
+  { key: 'teletravail', label: '🏠 TT / À distance' },
+  { key: 'arret_maladie', label: '🤒 Arrêt maladie' },
 ]
 
 export default function LeaveForm({ onSubmit, onCancel, myLeaves = [] }) {
