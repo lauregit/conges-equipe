@@ -14,4 +14,8 @@ export const TYPE_META = {
   arret_maladie:    { label: 'Arrêt maladie',    emoji: '🤒', short: '🤒',  bg: '#fecaca' },
 }
 
+// Defensive fallback for any legacy/unknown type still stored in the DB, so
+// the calendar never crashes on a value not in TYPE_META.
+export const FALLBACK_TYPE_META = { label: 'Autre', emoji: '📋', short: '•', bg: '#e9d5ff' }
+
 export const ROLES = ['employee', 'manager', 'admin']

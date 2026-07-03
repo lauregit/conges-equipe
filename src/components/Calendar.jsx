@@ -5,7 +5,7 @@ import {
   format, isSameMonth, isWeekend, isToday, parseISO
 } from 'date-fns'
 import { fr } from 'date-fns/locale'
-import { TYPE_META } from '../constants'
+import { TYPE_META, FALLBACK_TYPE_META } from '../constants'
 import { isDateInRange, leaveOverlapsMonth } from '../utils/dateHelpers'
 
 const STATUS_LABELS = {
@@ -102,7 +102,7 @@ export default function Calendar({ leaves, employees, currentUser, isAdmin, onDe
                   {week.map((day, di) => {
                     const leave = empLeaves[di]
                     const inMonth = isSameMonth(day, month)
-                    const meta = leave ? TYPE_META[leave.type] || TYPE_META.autre : null
+                    const meta = leave ? TYPE_META[leave.type] || FALLBACK_TYPE_META : null
                     const pending = leave?.status === 'pending'
 
                     return (
@@ -154,7 +154,7 @@ export default function Calendar({ leaves, employees, currentUser, isAdmin, onDe
                     {STATUS_LABELS[l.status] || l.status}
                   </span>
                   <span className="leave-item-type">
-                    {TYPE_META[l.type]?.short} {TYPE_META[l.type]?.label || l.type}
+                    {(TYPE_META[l.type] || FALLBACK_TYPE_META).short} {(TYPE_META[l.type] || FALLBACK_TYPE_META).label}
                   </span>
                   {(isAdmin || l.employee === currentUser) && (
                     <button

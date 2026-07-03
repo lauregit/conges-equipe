@@ -109,13 +109,25 @@ describe('POST — request vs declaration', () => {
     expect(notify.sent[0].subject).toMatch(/à approuver/i)
   })
 
-  it('auto-approves a maladie declaration and notifies FYI', async () => {
-    const { res, sql, notify } = await call({ method: 'POST', body: { ...validLeave, type: 'maladie' } })
+  it('auto-approves an arrêt maladie declaration and notifies FYI', async () => {
+    const { res, sql, notify } = await call({ method: 'POST', body: { ...validLeave, type: 'arret_maladie' } })
     expect(res.statusCode).toBe(201)
     expect(res.body.status).toBe('approved')
     const insert = sql.calls.find(c => /INSERT/i.test(c.query))
     expect(insert.params[5]).toBe('approved')
     expect(notify.sent[0].subject).toMatch(/absence déclarée/i)
+  })
+
+  it('accepts all of Laure’s leave types', async () => {
+    for (const type of ['conge_paye', 'conge_sans_solde', 'teletravail', 'arret_maladie']) {
+      const { res } = await call({ method: 'POST', body: { ...validLeave, type } })
+      expect(res.statusCode, `type ${type}`).toBe(201)
+    }
+  })
+
+  it('rejects a removed legacy type (rtt) with 400', async () => {
+    const { res } = await call({ method: 'POST', body: { ...validLeave, type: 'rtt' } })
+    expect(res.statusCode).toBe(400)
   })
 
   it('rejects an employee not in the DB roster with 400', async () => {

@@ -3,6 +3,8 @@
 // (certideal.com is DMARC-rejected until domain auth is set up).
 // All sends are best-effort: a failed email never fails the API request.
 
+import { TYPE_META } from '../src/constants.js';
+
 const FROM = { email: 'yvalensi@gmail.com', name: 'Congés Certideal' };
 const SENDGRID_URL = 'https://api.sendgrid.com/v3/mail/send';
 
@@ -33,12 +35,7 @@ export async function sendEmail({ to, subject, text }, fetchImpl = fetch) {
   }
 }
 
-const TYPE_LABELS = {
-  conge_paye: 'Congé payé',
-  rtt: 'RTT',
-  maladie: 'Maladie',
-  autre: 'Autre',
-};
+const typeLabel = (t) => TYPE_META[t]?.label || t;
 
 function fmtRange(l) {
   return l.startDate === l.endDate ? `le ${l.startDate}` : `du ${l.startDate} au ${l.endDate}`;
@@ -49,7 +46,7 @@ function fmtRange(l) {
 //            'declared'  = sickness declared (FYI, auto-approved)
 //            'recorded'  = leave recorded directly (team has no manager — FYI)
 export function requestEmail(leave, mode) {
-  const type = TYPE_LABELS[leave.type] || leave.type;
+  const type = typeLabel(leave.type);
   const noteLine = leave.note ? `\nNote : ${leave.note}` : '';
   const link = '\n\nCalendrier : https://conges-equipe-beryl.vercel.app';
   if (mode === 'declared') {
@@ -73,7 +70,7 @@ export function requestEmail(leave, mode) {
 
 // Decision taken -> notify the requester.
 export function decisionEmail(leave, action, decidedBy) {
-  const type = TYPE_LABELS[leave.type] || leave.type;
+  const type = typeLabel(leave.type);
   const verdict = action === 'approve' ? 'APPROUVÉE ✓' : 'REFUSÉE ✗';
   return {
     subject: `[Congés] Votre demande a été ${action === 'approve' ? 'approuvée' : 'refusée'}`,
