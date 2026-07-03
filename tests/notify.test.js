@@ -66,9 +66,9 @@ describe('email templates', () => {
   })
 
   it("requestEmail 'declared' announces the absence", () => {
-    const m = requestEmail({ ...LEAVE, type: 'maladie' }, 'declared')
+    const m = requestEmail({ ...LEAVE, type: 'arret_maladie' }, 'declared')
     expect(m.subject).toMatch(/absence déclarée/i)
-    expect(m.text).toMatch(/maladie/i)
+    expect(m.text).toMatch(/arrêt maladie/i)
   })
 
   it("requestEmail 'recorded' is an FYI, not an approval request", () => {

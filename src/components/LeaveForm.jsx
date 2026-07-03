@@ -89,7 +89,7 @@ export default function LeaveForm({ onSubmit, onCancel, myLeaves = [], teamHasMa
 
           <div className="banner banner-info" role="note">
             {declared
-              ? 'ℹ️ Une absence maladie est déclarée immédiatement — vos managers seront informés.'
+              ? 'ℹ️ Un arrêt maladie est déclaré immédiatement — vos managers seront informés.'
               : teamHasManager
                 ? 'ℹ️ Votre demande sera soumise à l’approbation de votre manager.'
                 : 'ℹ️ Le congé sera enregistré directement au calendrier.'}
