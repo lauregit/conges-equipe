@@ -30,6 +30,3 @@ export const ADMIN_NAME = "Laure COHEN"
 // (login + calendar rows) and the API (roster validation) to avoid drift.
 export const ALL_EMPLOYEES = [ADMIN_NAME, ...EMPLOYEES]
 
-// Leave types the app understands. Kept here so the API and UI validate the
-// same set. Labels/colors live in the components.
-export const LEAVE_TYPES = ['conge_paye', 'rtt', 'maladie', 'autre']

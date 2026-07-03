@@ -1,23 +1,29 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { fetchLeaves, addLeave, deleteLeave } from './api'
-import { ADMIN_NAME } from './employees'
+import { fetchLeaves, fetchEmployees, addLeave, decideLeave, deleteLeave, saveEmployee } from './api'
+import { DECLARED_TYPES } from './constants'
 import Calendar from './components/Calendar'
 import LoginScreen from './components/LoginScreen'
 import LeaveForm from './components/LeaveForm'
+import Approvals from './components/Approvals'
+import Presence from './components/Presence'
+import TeamSettings from './components/TeamSettings'
 import './App.css'
 
 export default function App() {
   const [user, setUser] = useState(() => sessionStorage.getItem('user') || null)
   const [leaves, setLeaves] = useState([])
+  const [employees, setEmployees] = useState([])
   const [view, setView] = useState('calendar')
   const [notification, setNotification] = useState(null)
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState(null)
   const notifTimer = useRef(null)
 
-  const loadLeaves = useCallback(async () => {
+  const loadAll = useCallback(async () => {
     try {
-      setLeaves(await fetchLeaves())
+      const [l, e] = await Promise.all([fetchLeaves(), fetchEmployees()])
+      setLeaves(l)
+      setEmployees(e)
       setLoadError(null)
     } catch (err) {
       console.error(err)
@@ -27,12 +33,12 @@ export default function App() {
     }
   }, [])
 
-  // No push channel on Postgres like Firestore's onSnapshot. Instead of
-  // polling, refresh whenever someone connects (mount) or returns to the tab.
+  // No push channel on Postgres. Refresh whenever someone connects (mount)
+  // or returns to the tab.
   useEffect(() => {
-    loadLeaves()
+    loadAll()
     const onFocus = () => {
-      if (document.visibilityState === 'visible') loadLeaves()
+      if (document.visibilityState === 'visible') loadAll()
     }
     window.addEventListener('focus', onFocus)
     document.addEventListener('visibilitychange', onFocus)
@@ -40,10 +46,19 @@ export default function App() {
       window.removeEventListener('focus', onFocus)
       document.removeEventListener('visibilitychange', onFocus)
     }
-  }, [loadLeaves])
+  }, [loadAll])
 
-  const isAdmin = user === ADMIN_NAME
+  const me = employees.find(e => e.name === user)
+  const isAdmin = me?.role === 'admin'
+  const isManager = me?.role === 'manager'
+  const canApprove = isAdmin || isManager
   const myLeaves = leaves.filter(l => l.employee === user)
+
+  const teamOf = name => employees.find(e => e.name === name)?.team
+  const pendingCount = leaves.filter(l =>
+    l.status === 'pending' &&
+    (isAdmin || (isManager && teamOf(l.employee) === me?.team && l.employee !== user))
+  ).length
 
   function handleLogin(name) {
     setUser(name)
@@ -59,9 +74,15 @@ export default function App() {
   // Throws on failure so LeaveForm can keep the form open and re-enable submit.
   async function handleSubmitLeave(leave) {
     try {
-      await addLeave({ employee: user, ...leave })
-      await loadLeaves()
-      showNotification('Congé enregistré ✓')
+      const declared = DECLARED_TYPES.includes(leave.type)
+      const created = await addLeave({ employee: user, ...leave })
+      await loadAll()
+      // The server decides whether the team requires approval.
+      showNotification(
+        created.status === 'pending' ? 'Demande envoyée pour approbation ✓'
+          : declared ? 'Absence déclarée ✓'
+          : 'Congé enregistré ✓'
+      )
       setView('calendar')
     } catch (err) {
       showNotification(err.message || "Échec de l'enregistrement", 'error')
@@ -69,13 +90,34 @@ export default function App() {
     }
   }
 
+  async function handleDecide(id, action) {
+    try {
+      await decideLeave(id, user, action)
+      await loadAll()
+      showNotification(action === 'approve' ? 'Demande approuvée ✓' : 'Demande refusée')
+    } catch (err) {
+      showNotification(err.message || 'Échec du traitement', 'error')
+    }
+  }
+
   async function handleDeleteLeave(id) {
     try {
       await deleteLeave(id, user)
-      await loadLeaves()
+      await loadAll()
       showNotification('Congé supprimé')
     } catch (err) {
       showNotification(err.message || 'Échec de la suppression', 'error')
+    }
+  }
+
+  async function handleSaveEmployee(employee) {
+    try {
+      await saveEmployee(user, employee)
+      await loadAll()
+      showNotification('Équipe mise à jour ✓')
+    } catch (err) {
+      showNotification(err.message || "Échec de l'enregistrement", 'error')
+      throw err
     }
   }
 
@@ -88,7 +130,14 @@ export default function App() {
   // Clear a pending notification timer on unmount.
   useEffect(() => () => { if (notifTimer.current) clearTimeout(notifTimer.current) }, [])
 
-  if (!user) return <LoginScreen onLogin={handleLogin} />
+  if (!user) return <LoginScreen employees={employees} loading={loading} onLogin={handleLogin} />
+
+  const TABS = [
+    { key: 'calendar', label: '📅 Calendrier' },
+    { key: 'presence', label: '👥 Présence' },
+    ...(canApprove ? [{ key: 'approvals', label: `✅ Approbations${pendingCount ? ` (${pendingCount})` : ''}` }] : []),
+    ...(isAdmin ? [{ key: 'team', label: '⚙️ Équipe' }] : []),
+  ]
 
   return (
     <div className="app">
@@ -100,17 +149,22 @@ export default function App() {
             <div className="app-sub">CertiDeal</div>
           </div>
         </div>
+        <nav className="header-tabs" aria-label="Navigation">
+          {TABS.map(t => (
+            <button
+              key={t.key}
+              className={`tab-btn ${view === t.key ? 'tab-active' : ''}`}
+              onClick={() => setView(t.key)}
+            >
+              {t.label}
+            </button>
+          ))}
+        </nav>
         <div className="header-right">
-          <span className="user-badge">{user}{isAdmin ? ' 👑' : ''}</span>
-          {view === 'calendar' ? (
-            <button className="btn-primary" onClick={() => setView('request')}>
-              + Poser un congé
-            </button>
-          ) : (
-            <button className="btn-secondary" onClick={() => setView('calendar')}>
-              ← Calendrier
-            </button>
-          )}
+          <span className="user-badge">{user}{isAdmin ? ' 👑' : isManager ? ' ⭐' : ''}</span>
+          <button className="btn-primary" onClick={() => setView('request')}>
+            + Poser un congé
+          </button>
           <button className="btn-logout" onClick={handleLogout}>Déco</button>
         </div>
       </header>
@@ -121,30 +175,50 @@ export default function App() {
         </div>
       )}
 
-      {loadError && view === 'calendar' && (
+      {loadError && view !== 'request' && (
         <div className="banner banner-error" role="alert">
-          ⚠️ {loadError} · <button className="banner-retry" onClick={loadLeaves}>Réessayer</button>
+          ⚠️ {loadError} · <button className="banner-retry" onClick={loadAll}>Réessayer</button>
         </div>
       )}
 
-      {view === 'calendar' && (
-        loading && leaves.length === 0 ? (
-          <div className="loading-state">Chargement des congés…</div>
-        ) : (
-          <Calendar
-            leaves={leaves}
-            currentUser={user}
-            isAdmin={isAdmin}
-            onDelete={handleDeleteLeave}
-          />
-        )
-      )}
-      {view === 'request' && (
-        <LeaveForm
-          myLeaves={myLeaves}
-          onSubmit={handleSubmitLeave}
-          onCancel={() => setView('calendar')}
-        />
+      {loading && leaves.length === 0 && employees.length === 0 ? (
+        <div className="loading-state">Chargement…</div>
+      ) : (
+        <>
+          {view === 'calendar' && (
+            <Calendar
+              leaves={leaves}
+              employees={employees}
+              currentUser={user}
+              isAdmin={isAdmin}
+              onDelete={handleDeleteLeave}
+            />
+          )}
+          {view === 'presence' && (
+            <Presence employees={employees} leaves={leaves} currentUser={user} />
+          )}
+          {view === 'approvals' && canApprove && (
+            <Approvals
+              employees={employees}
+              leaves={leaves}
+              currentUser={user}
+              onDecide={handleDecide}
+            />
+          )}
+          {view === 'team' && isAdmin && (
+            <TeamSettings employees={employees} onSave={handleSaveEmployee} />
+          )}
+          {view === 'request' && (
+            <LeaveForm
+              myLeaves={myLeaves}
+              teamHasManager={employees.some(e =>
+                e.active && e.role === 'manager' && e.team === me?.team
+              )}
+              onSubmit={handleSubmitLeave}
+              onCancel={() => setView('calendar')}
+            />
+          )}
+        </>
       )}
     </div>
   )

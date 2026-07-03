@@ -5,24 +5,26 @@ import {
   format, isSameMonth, isWeekend, isToday, parseISO
 } from 'date-fns'
 import { fr } from 'date-fns/locale'
-import { ALL_EMPLOYEES } from '../employees'
+import { TYPE_META } from '../constants'
 import { isDateInRange, leaveOverlapsMonth } from '../utils/dateHelpers'
 
-const TYPE_COLORS = {
-  conge_paye:       { bg: '#bfdbfe', label: 'CP' },
-  conge_sans_solde: { bg: '#fed7aa', label: 'CSS' },
-  teletravail:      { bg: '#d9f99d', label: '🏠' },
-  arret_maladie:    { bg: '#fecaca', label: '🤒' },
+const STATUS_LABELS = {
+  pending: 'En attente',
+  approved: 'Approuvé',
+  rejected: 'Refusé',
 }
 
+// Grid shows approved leaves solid and pending ones hatched with a “?”;
+// rejected leaves never appear on the grid (only in the lists, badged).
 function isOnLeave(employee, date, leaves) {
   const d = format(date, 'yyyy-MM-dd')
   return leaves.find(l =>
-    l.employee === employee && isDateInRange(d, l.startDate, l.endDate)
+    l.employee === employee && l.status !== 'rejected' &&
+    isDateInRange(d, l.startDate, l.endDate)
   )
 }
 
-export default function Calendar({ leaves, currentUser, isAdmin, onDelete }) {
+export default function Calendar({ leaves, employees, currentUser, isAdmin, onDelete }) {
   const [month, setMonth] = useState(new Date())
 
   const monthStart = startOfMonth(month)
@@ -41,11 +43,15 @@ export default function Calendar({ leaves, currentUser, isAdmin, onDelete }) {
 
   const DAY_LABELS = ['Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam', 'Dim']
 
-  // Leaves overlapping this month (correctly includes multi-month leaves,
-  // e.g. 15 Jan → 20 Feb now counts in February).
+  // Active roster, grouped by team then name (matches the DB ordering).
+  const roster = employees.filter(e => e.active)
+
+  // Leaves overlapping this month (correctly includes multi-month leaves).
   const monthStartStr = format(monthStart, 'yyyy-MM-dd')
   const monthEndStr = format(monthEnd, 'yyyy-MM-dd')
-  const monthLeaves = leaves.filter(l => leaveOverlapsMonth(l, monthStartStr, monthEndStr))
+  const monthLeaves = leaves.filter(l =>
+    l.status !== 'rejected' && leaveOverlapsMonth(l, monthStartStr, monthEndStr)
+  )
 
   const myLeaves = leaves.filter(l => l.employee === currentUser)
 
@@ -83,31 +89,32 @@ export default function Calendar({ leaves, currentUser, isAdmin, onDelete }) {
             </div>
 
             {/* Employee rows */}
-            {ALL_EMPLOYEES.map(emp => {
-              const empLeaves = week.map(day => isOnLeave(emp, day, leaves))
+            {roster.map(emp => {
+              const empLeaves = week.map(day => isOnLeave(emp.name, day, leaves))
               const hasLeave = empLeaves.some(Boolean)
               if (!hasLeave && !isSameMonth(week[3], month)) return null
 
               return (
-                <div key={emp} className="employee-row">
-                  <div className="employee-name" title={emp}>
-                    {emp === currentUser ? <strong>{emp}</strong> : emp}
+                <div key={emp.name} className="employee-row">
+                  <div className="employee-name" title={`${emp.name} — ${emp.team}`}>
+                    {emp.name === currentUser ? <strong>{emp.name}</strong> : emp.name}
                   </div>
                   {week.map((day, di) => {
                     const leave = empLeaves[di]
                     const inMonth = isSameMonth(day, month)
-                    const colors = leave ? TYPE_COLORS[leave.type] || TYPE_COLORS.autre : null
+                    const meta = leave ? TYPE_META[leave.type] || TYPE_META.autre : null
+                    const pending = leave?.status === 'pending'
 
                     return (
                       <div
                         key={format(day, 'yyyy-MM-dd')}
-                        className={`day-cell ${isWeekend(day) ? 'weekend' : ''} ${isToday(day) ? 'today' : ''} ${leave ? 'on-leave' : ''} ${leave && emp === currentUser ? 'is-mine' : ''}`}
-                        style={leave && inMonth ? { background: colors.bg } : {}}
-                        title={leave ? `${leave.type}${leave.note ? ' — ' + leave.note : ''}` : ''}
+                        className={`day-cell ${isWeekend(day) ? 'weekend' : ''} ${isToday(day) ? 'today' : ''} ${leave ? 'on-leave' : ''} ${leave && emp.name === currentUser ? 'is-mine' : ''} ${pending ? 'is-pending' : ''}`}
+                        style={leave && inMonth ? { background: meta.bg } : {}}
+                        title={leave ? `${meta.label} — ${STATUS_LABELS[leave.status]}${leave.note ? ' — ' + leave.note : ''}` : ''}
                       >
                         {leave && inMonth && (
                           <div className="leave-dot">
-                            {colors.label}
+                            {meta.short}{pending ? ' ?' : ''}
                           </div>
                         )}
                       </div>
@@ -143,8 +150,11 @@ export default function Calendar({ leaves, currentUser, isAdmin, onDelete }) {
                   </span>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span className={`status-badge status-${l.status}`}>
+                    {STATUS_LABELS[l.status] || l.status}
+                  </span>
                   <span className="leave-item-type">
-                    {TYPE_COLORS[l.type]?.label} {l.type.replace('_', ' ')}
+                    {TYPE_META[l.type]?.short} {TYPE_META[l.type]?.label || l.type}
                   </span>
                   {(isAdmin || l.employee === currentUser) && (
                     <button

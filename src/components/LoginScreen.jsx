@@ -1,8 +1,8 @@
 import { useState } from 'react'
-import { ALL_EMPLOYEES } from '../employees'
 
-export default function LoginScreen({ onLogin }) {
+export default function LoginScreen({ employees, loading, onLogin }) {
   const [selected, setSelected] = useState('')
+  const names = employees.filter(e => e.active).map(e => e.name)
 
   function handleSubmit(e) {
     e.preventDefault()
@@ -18,8 +18,10 @@ export default function LoginScreen({ onLogin }) {
         <form onSubmit={handleSubmit}>
           <label>Je suis...</label>
           <select value={selected} onChange={e => setSelected(e.target.value)} required>
-            <option value="">— Sélectionner mon nom —</option>
-            {ALL_EMPLOYEES.map(name => (
+            <option value="">
+              {loading && names.length === 0 ? 'Chargement…' : '— Sélectionner mon nom —'}
+            </option>
+            {names.map(name => (
               <option key={name} value={name}>{name}</option>
             ))}
           </select>
