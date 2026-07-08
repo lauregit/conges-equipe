@@ -84,6 +84,27 @@ export const TEAMS = {
     ],
     superAdmins: ["Laure COHEN", "Andrea LEVY", "Vithusa VASIDDAN", "Apolline SARAGONI", "Yoann VALENSI"],
   },
+
+  technique: {
+    name: "Technique",
+    members: [
+      "Christophe PROT",
+      "Claire HUANG",
+      "Manuel JEHANNO",
+      "Alexandre SUPICA",
+      "Romain AVENIA",
+      "Matthieu JACQUET",
+      "Amine BARBOURA",
+      "Novity",
+      "Eric Michel Eymeric DESWARTE",
+      "Pierre SZLEPER",
+      "Sofiane BELABBAS",
+      "Minh Ngoc NGUYEN",
+      "Laure COHEN",
+      "Yoann VALENSI",
+    ],
+    superAdmins: ["Laure COHEN", "Christophe PROT", "Yoann VALENSI"],
+  },
 }
 
 // Super admins globaux : voient TOUTES les équipes
@@ -94,6 +115,7 @@ export const ALL_EMPLOYEES = [
   ...new Set([
     ...TEAMS.growth.members,
     ...TEAMS.customer_success.members,
+    ...TEAMS.technique.members,
   ])
 ]
 
