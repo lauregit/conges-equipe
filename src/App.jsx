@@ -1,8 +1,12 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
+import { signOut } from 'firebase/auth'
+import { auth } from './firebase'
+import { useAuth } from './hooks/useAuth'
 import { fetchLeaves, fetchEmployees, addLeave, decideLeave, deleteLeave, saveEmployee } from './api'
 import { DECLARED_TYPES } from './constants'
+import { SUPER_ADMIN_NAMES, ALL_EMPLOYEES } from './employees'
 import Calendar from './components/Calendar'
-import LoginScreen from './components/LoginScreen'
+import AuthScreen from './components/AuthScreen'
 import LeaveForm from './components/LeaveForm'
 import Approvals from './components/Approvals'
 import Presence from './components/Presence'
@@ -10,7 +14,7 @@ import TeamSettings from './components/TeamSettings'
 import './App.css'
 
 export default function App() {
-  const [user, setUser] = useState(() => sessionStorage.getItem('user') || null)
+  const { firebaseUser, profile, isSuperAdmin, loading: authLoading } = useAuth()
   const [leaves, setLeaves] = useState([])
   const [employees, setEmployees] = useState([])
   const [view, setView] = useState('calendar')
@@ -18,6 +22,8 @@ export default function App() {
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState(null)
   const notifTimer = useRef(null)
+
+  const user = profile?.name || null
 
   const loadAll = useCallback(async () => {
     try {
@@ -33,23 +39,20 @@ export default function App() {
     }
   }, [])
 
-  // No push channel on Postgres. Refresh whenever someone connects (mount)
-  // or returns to the tab.
   useEffect(() => {
+    if (!user) return
     loadAll()
-    const onFocus = () => {
-      if (document.visibilityState === 'visible') loadAll()
-    }
+    const onFocus = () => { if (document.visibilityState === 'visible') loadAll() }
     window.addEventListener('focus', onFocus)
     document.addEventListener('visibilitychange', onFocus)
     return () => {
       window.removeEventListener('focus', onFocus)
       document.removeEventListener('visibilitychange', onFocus)
     }
-  }, [loadAll])
+  }, [loadAll, user])
 
   const me = employees.find(e => e.name === user)
-  const isAdmin = me?.role === 'admin'
+  const isAdmin = isSuperAdmin || me?.role === 'admin'
   const isManager = me?.role === 'manager'
   const canApprove = isAdmin || isManager
   const myLeaves = leaves.filter(l => l.employee === user)
@@ -60,22 +63,25 @@ export default function App() {
     (isAdmin || (isManager && teamOf(l.employee) === me?.team && l.employee !== user))
   ).length
 
-  function handleLogin(name) {
-    setUser(name)
-    sessionStorage.setItem('user', name)
+  async function handleLogout() {
+    await signOut(auth)
+    setView('calendar')
+    setLeaves([])
+    setEmployees([])
   }
 
-  function handleLogout() {
-    setUser(null)
-    sessionStorage.removeItem('user')
-    setView('calendar')
+  function handleProfileSaved() {
+    // onAuthStateChanged will re-fire and reload the profile automatically
+    window.location.reload()
   }
 
   // Throws on failure so LeaveForm can keep the form open and re-enable submit.
   async function handleSubmitLeave(leave) {
     try {
       const declared = DECLARED_TYPES.includes(leave.type)
-      const created = await addLeave({ employee: user, ...leave })
+      // Super admins can submit for any employee (employee comes from the form)
+      const targetEmployee = leave.employee || user
+      const created = await addLeave({ employee: targetEmployee, ...leave })
       await loadAll()
       // The server decides whether the team requires approval.
       showNotification(
@@ -130,7 +136,13 @@ export default function App() {
   // Clear a pending notification timer on unmount.
   useEffect(() => () => { if (notifTimer.current) clearTimeout(notifTimer.current) }, [])
 
-  if (!user) return <LoginScreen employees={employees} loading={loading} onLogin={handleLogin} />
+  // Still resolving Firebase auth state
+  if (authLoading) return <div className="loading-state" style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>Chargement…</div>
+
+  // Not logged in, or logged in but no profile yet
+  if (!firebaseUser || !profile) return (
+    <AuthScreen firebaseUser={firebaseUser || null} onProfileSaved={handleProfileSaved} />
+  )
 
   const TABS = [
     { key: 'calendar', label: '📅 Calendrier' },
@@ -161,7 +173,7 @@ export default function App() {
           ))}
         </nav>
         <div className="header-right">
-          <span className="user-badge">{user}{isAdmin ? ' 👑' : isManager ? ' ⭐' : ''}</span>
+          <span className="user-badge">{user}{isSuperAdmin ? ' 👑' : isManager ? ' ⭐' : ''}</span>
           <button className="btn-primary" onClick={() => setView('request')}>
             + Poser un congé
           </button>
@@ -191,6 +203,7 @@ export default function App() {
               employees={employees}
               currentUser={user}
               isAdmin={isAdmin}
+              isSuperAdmin={isSuperAdmin}
               onDelete={handleDeleteLeave}
             />
           )}
@@ -210,7 +223,10 @@ export default function App() {
           )}
           {view === 'request' && (
             <LeaveForm
+              currentUser={user}
+              isSuperAdmin={isSuperAdmin}
               myLeaves={myLeaves}
+              allLeaves={leaves}
               teamHasManager={employees.some(e =>
                 e.active && e.role === 'manager' && e.team === me?.team
               )}

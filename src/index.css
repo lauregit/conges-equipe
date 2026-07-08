@@ -397,3 +397,58 @@ button:focus-visible, select:focus-visible, input:focus-visible, a:focus-visible
 }
 .leave-type-btn:hover { border-color: var(--primary); }
 .leave-type-btn.selected { border-color: var(--primary); background: var(--primary-light); color: var(--primary-dark); font-weight: 700; }
+
+/* ── Auth screen ── */
+.auth-tabs {
+  display: flex;
+  background: #f1f5f9;
+  border-radius: 8px;
+  padding: 4px;
+  margin-bottom: 24px;
+  gap: 4px;
+}
+.auth-tab {
+  flex: 1;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 8px;
+  border-radius: 6px;
+}
+.auth-tab.active {
+  background: var(--surface);
+  color: var(--primary);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+.auth-error {
+  background: #fee2e2;
+  color: var(--danger);
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-size: 13px;
+  margin-bottom: 12px;
+}
+.auth-info {
+  background: #dcfce7;
+  color: #166534;
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-size: 13px;
+  margin-bottom: 12px;
+}
+.auth-submit {
+  width: 100%;
+  padding: 11px;
+  font-size: 15px;
+  font-weight: 700;
+  margin-bottom: 10px;
+}
+.auth-forgot {
+  width: 100%;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  text-decoration: underline;
+  padding: 4px;
+}

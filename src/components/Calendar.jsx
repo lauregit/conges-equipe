@@ -24,7 +24,7 @@ function isOnLeave(employee, date, leaves) {
   )
 }
 
-export default function Calendar({ leaves, employees, currentUser, isAdmin, onDelete }) {
+export default function Calendar({ leaves, employees, currentUser, isAdmin, isSuperAdmin, onDelete }) {
   const [month, setMonth] = useState(new Date())
 
   const monthStart = startOfMonth(month)
@@ -43,8 +43,11 @@ export default function Calendar({ leaves, employees, currentUser, isAdmin, onDe
 
   const DAY_LABELS = ['Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam', 'Dim']
 
-  // Active roster, grouped by team then name (matches the DB ordering).
-  const roster = employees.filter(e => e.active)
+  // Super admins see everyone; regular users see only themselves.
+  const activeAll = employees.filter(e => e.active)
+  const roster = isSuperAdmin
+    ? activeAll
+    : activeAll.filter(e => e.name === currentUser)
 
   // Leaves overlapping this month (correctly includes multi-month leaves).
   const monthStartStr = format(monthStart, 'yyyy-MM-dd')
