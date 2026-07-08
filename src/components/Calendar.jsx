@@ -24,7 +24,7 @@ function isOnLeave(employee, date, leaves) {
   )
 }
 
-export default function Calendar({ leaves, employees, currentUser, isAdmin, isSuperAdmin, onDelete }) {
+export default function Calendar({ leaves, employees, currentUser, isAdmin, isSuperAdmin, visibleTeamKeys = [], onDelete }) {
   const [month, setMonth] = useState(new Date())
 
   const monthStart = startOfMonth(month)
@@ -43,10 +43,12 @@ export default function Calendar({ leaves, employees, currentUser, isAdmin, isSu
 
   const DAY_LABELS = ['Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam', 'Dim']
 
-  // Super admins see everyone; regular users see only themselves.
+  // Visibilité par équipe :
+  // - Super admin : voit les équipes dans visibleTeamKeys
+  // - Employé classique : voit seulement sa propre ligne
   const activeAll = employees.filter(e => e.active)
   const roster = isSuperAdmin
-    ? activeAll
+    ? activeAll.filter(e => visibleTeamKeys.includes(e.teamKey))
     : activeAll.filter(e => e.name === currentUser)
 
   // Leaves overlapping this month (correctly includes multi-month leaves).

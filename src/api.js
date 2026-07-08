@@ -4,7 +4,7 @@ import {
   doc, query, orderBy, serverTimestamp
 } from 'firebase/firestore'
 import { db } from './firebase'
-import { ALL_EMPLOYEES, SUPER_ADMIN_NAMES } from './employees'
+import { ALL_EMPLOYEES, SUPER_ADMIN_NAMES, TEAMS, getTeamOf } from './employees'
 
 const LEAVES_COL = 'leaves'
 
@@ -45,12 +45,16 @@ export async function deleteLeave(id) {
 // Built from the static list — no DB needed for the roster.
 
 export async function fetchEmployees() {
-  return ALL_EMPLOYEES.map(name => ({
-    name,
-    active: true,
-    team: 'Marketing',
-    role: SUPER_ADMIN_NAMES.includes(name) ? 'admin' : 'employee',
-  }))
+  return ALL_EMPLOYEES.map(name => {
+    const team = getTeamOf(name)
+    return {
+      name,
+      active: true,
+      team: team?.name || '',
+      teamKey: team?.key || '',
+      role: SUPER_ADMIN_NAMES.includes(name) ? 'admin' : 'employee',
+    }
+  })
 }
 
 export async function saveEmployee() {

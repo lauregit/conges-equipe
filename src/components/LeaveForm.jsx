@@ -2,11 +2,9 @@ import { useState } from 'react'
 import { format } from 'date-fns'
 import { doLeavesOverlap } from '../utils/dateHelpers'
 import { LEAVE_TYPES as TYPE_KEYS, TYPE_META, DECLARED_TYPES } from '../constants'
-import { ALL_EMPLOYEES } from '../employees'
-
 const LEAVE_TYPES = TYPE_KEYS.map(key => ({ key, label: `${TYPE_META[key].emoji} ${TYPE_META[key].label}` }))
 
-export default function LeaveForm({ onSubmit, onCancel, currentUser, isSuperAdmin, myLeaves = [], allLeaves = [], teamHasManager = false }) {
+export default function LeaveForm({ onSubmit, onCancel, currentUser, isSuperAdmin, visibleEmployees = [], myLeaves = [], allLeaves = [], teamHasManager = false }) {
   const today = format(new Date(), 'yyyy-MM-dd')
   // Super admins can fill in for anyone
   const [actingFor, setActingFor] = useState(currentUser)
@@ -50,7 +48,7 @@ export default function LeaveForm({ onSubmit, onCancel, currentUser, isSuperAdmi
             <div className="form-group">
               <label>👑 Saisir pour</label>
               <select value={actingFor} onChange={e => setActingFor(e.target.value)}>
-                {ALL_EMPLOYEES.map(n => (
+                {visibleEmployees.map(n => (
                   <option key={n} value={n}>{n}{n === currentUser ? ' (moi)' : ''}</option>
                 ))}
               </select>

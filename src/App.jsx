@@ -14,7 +14,7 @@ import TeamSettings from './components/TeamSettings'
 import './App.css'
 
 export default function App() {
-  const { firebaseUser, profile, isSuperAdmin, loading: authLoading } = useAuth()
+  const { firebaseUser, profile, isSuperAdmin, visibleTeamKeys, loading: authLoading } = useAuth()
   const [leaves, setLeaves] = useState([])
   const [employees, setEmployees] = useState([])
   const [view, setView] = useState('calendar')
@@ -56,6 +56,12 @@ export default function App() {
   const isManager = me?.role === 'manager'
   const canApprove = isAdmin || isManager
   const myLeaves = leaves.filter(l => l.employee === user)
+
+  // Congés visibles selon le rôle (filtrés par équipe pour les super admins)
+  const visibleEmployeeNames = isSuperAdmin
+    ? employees.filter(e => visibleTeamKeys.includes(e.teamKey)).map(e => e.name)
+    : [user]
+  const visibleLeaves = leaves.filter(l => visibleEmployeeNames.includes(l.employee))
 
   const teamOf = name => employees.find(e => e.name === name)?.team
   const pendingCount = leaves.filter(l =>
@@ -199,11 +205,12 @@ export default function App() {
         <>
           {view === 'calendar' && (
             <Calendar
-              leaves={leaves}
+              leaves={visibleLeaves}
               employees={employees}
               currentUser={user}
               isAdmin={isAdmin}
               isSuperAdmin={isSuperAdmin}
+              visibleTeamKeys={visibleTeamKeys}
               onDelete={handleDeleteLeave}
             />
           )}
@@ -225,8 +232,9 @@ export default function App() {
             <LeaveForm
               currentUser={user}
               isSuperAdmin={isSuperAdmin}
+              visibleEmployees={visibleEmployeeNames}
               myLeaves={myLeaves}
-              allLeaves={leaves}
+              allLeaves={visibleLeaves}
               teamHasManager={employees.some(e =>
                 e.active && e.role === 'manager' && e.team === me?.team
               )}
