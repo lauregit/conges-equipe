@@ -2,9 +2,11 @@ import { useState } from 'react'
 import { format } from 'date-fns'
 import { doLeavesOverlap } from '../utils/dateHelpers'
 import { LEAVE_TYPES as TYPE_KEYS, TYPE_META, DECLARED_TYPES } from '../constants'
+import { initialStatus } from '../leavePolicy'
+import { sameName } from '../utils/names'
 const LEAVE_TYPES = TYPE_KEYS.map(key => ({ key, label: `${TYPE_META[key].emoji} ${TYPE_META[key].label}` }))
 
-export default function LeaveForm({ onSubmit, onCancel, currentUser, isSuperAdmin, visibleEmployees = [], myLeaves = [], allLeaves = [], teamHasManager = false }) {
+export default function LeaveForm({ onSubmit, onCancel, currentUser, isSuperAdmin, visibleEmployees = [], myLeaves = [], allLeaves = [], roster = [] }) {
   const today = format(new Date(), 'yyyy-MM-dd')
   // Super admins can fill in for anyone
   const [actingFor, setActingFor] = useState(currentUser)
@@ -16,7 +18,7 @@ export default function LeaveForm({ onSubmit, onCancel, currentUser, isSuperAdmi
 
   // Leaves for whoever we're acting for (to detect overlaps)
   const targetLeaves = isSuperAdmin
-    ? allLeaves.filter(l => l.employee === actingFor)
+    ? allLeaves.filter(l => sameName(l.employee, actingFor))
     : myLeaves
 
   const declared = DECLARED_TYPES.includes(type)
@@ -24,6 +26,12 @@ export default function LeaveForm({ onSubmit, onCancel, currentUser, isSuperAdmi
   const overlaps = validRange && targetLeaves.some(l =>
     l.status !== 'rejected' && doLeavesOverlap(startDate, endDate, l)
   )
+  // Le vrai verdict vient de la même règle que le serveur : ce que dira
+  // initialStatus au moment de l'enregistrement.
+  const willBePending = initialStatus(
+    { type, employee: actingFor, submittedBy: currentUser },
+    roster
+  ) === 'pending'
 
   async function handleSubmit(e) {
     e.preventDefault()
@@ -106,7 +114,7 @@ export default function LeaveForm({ onSubmit, onCancel, currentUser, isSuperAdmi
           <div className="banner banner-info" role="note">
             {declared
               ? 'ℹ️ Un arrêt maladie est déclaré immédiatement — vos managers seront informés.'
-              : teamHasManager
+              : willBePending
                 ? 'ℹ️ Votre demande sera soumise à l’approbation de votre manager.'
                 : 'ℹ️ Le congé sera enregistré directement au calendrier.'}
           </div>
@@ -129,7 +137,7 @@ export default function LeaveForm({ onSubmit, onCancel, currentUser, isSuperAdmi
             <button type="submit" className="btn-primary" disabled={submitting}>
               {submitting ? 'Enregistrement...'
                 : declared ? "Déclarer l'absence"
-                : teamHasManager ? 'Envoyer la demande'
+                : willBePending ? 'Envoyer la demande'
                 : 'Confirmer le congé'}
             </button>
           </div>

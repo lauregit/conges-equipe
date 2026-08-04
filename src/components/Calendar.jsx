@@ -7,6 +7,7 @@ import {
 import { fr } from 'date-fns/locale'
 import { TYPE_META, FALLBACK_TYPE_META } from '../constants'
 import { isDateInRange, leaveOverlapsMonth } from '../utils/dateHelpers'
+import { sameName } from '../utils/names'
 
 const STATUS_LABELS = {
   pending: 'En attente',
@@ -19,13 +20,16 @@ const STATUS_LABELS = {
 function isOnLeave(employee, date, leaves) {
   const d = format(date, 'yyyy-MM-dd')
   return leaves.find(l =>
-    l.employee === employee && l.status !== 'rejected' &&
+    sameName(l.employee, employee) && l.status !== 'rejected' &&
     isDateInRange(d, l.startDate, l.endDate)
   )
 }
 
-export default function Calendar({ leaves, employees, currentUser, isAdmin, isSuperAdmin, visibleTeamKeys = [], onDelete }) {
+// `employees` arrive déjà filtré au périmètre visible (App.jsx) :
+// employé → sa ligne ; approbateur → ses équipes ; admin global → tout.
+export default function Calendar({ leaves, employees, currentUser, isAdmin, onDelete }) {
   const [month, setMonth] = useState(new Date())
+  const [teamFilter, setTeamFilter] = useState('')
 
   const monthStart = startOfMonth(month)
   const monthEnd = endOfMonth(month)
@@ -43,13 +47,11 @@ export default function Calendar({ leaves, employees, currentUser, isAdmin, isSu
 
   const DAY_LABELS = ['Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam', 'Dim']
 
-  // Visibilité par équipe :
-  // - Super admin : voit les équipes dans visibleTeamKeys
-  // - Employé classique : voit seulement sa propre ligne
-  const activeAll = employees.filter(e => e.active)
-  const roster = isSuperAdmin
-    ? activeAll.filter(e => visibleTeamKeys.includes(e.teamKey))
-    : activeAll.filter(e => e.name === currentUser)
+  // Filtre d'équipe (utile pour les admins globaux qui voient tout le monde).
+  const teams = [...new Set(employees.map(e => e.team))].sort()
+  const roster = employees.filter(e =>
+    e.active && (!teamFilter || e.team === teamFilter)
+  )
 
   // Leaves overlapping this month (correctly includes multi-month leaves).
   const monthStartStr = format(monthStart, 'yyyy-MM-dd')
@@ -58,7 +60,12 @@ export default function Calendar({ leaves, employees, currentUser, isAdmin, isSu
     l.status !== 'rejected' && leaveOverlapsMonth(l, monthStartStr, monthEndStr)
   )
 
-  const myLeaves = leaves.filter(l => l.employee === currentUser)
+  const myLeaves = leaves.filter(l => sameName(l.employee, currentUser))
+  // La liste du bas suit le filtre d'équipe courant.
+  const rosterNames = roster.map(r => r.name)
+  const listLeaves = teamFilter
+    ? monthLeaves.filter(l => rosterNames.some(n => sameName(n, l.employee)))
+    : monthLeaves
 
   return (
     <div className="calendar-container">
@@ -70,6 +77,16 @@ export default function Calendar({ leaves, employees, currentUser, isAdmin, isSu
           </span>
         </div>
         <div className="nav-buttons">
+          {teams.length > 1 && (
+            <select
+              value={teamFilter}
+              onChange={e => setTeamFilter(e.target.value)}
+              aria-label="Filtrer par équipe"
+            >
+              <option value="">Toutes les équipes</option>
+              {teams.map(t => <option key={t} value={t}>{t}</option>)}
+            </select>
+          )}
           <button aria-label="Mois précédent" onClick={() => setMonth(subMonths(month, 1))}>◀ Préc.</button>
           <button aria-label="Aller au mois actuel" onClick={() => setMonth(new Date())}>Aujourd'hui</button>
           <button aria-label="Mois suivant" onClick={() => setMonth(addMonths(month, 1))}>Suiv. ▶</button>
@@ -102,7 +119,7 @@ export default function Calendar({ leaves, employees, currentUser, isAdmin, isSu
               return (
                 <div key={emp.name} className="employee-row">
                   <div className="employee-name" title={`${emp.name} — ${emp.team}`}>
-                    {emp.name === currentUser ? <strong>{emp.name}</strong> : emp.name}
+                    {sameName(emp.name, currentUser) ? <strong>{emp.name}</strong> : emp.name}
                   </div>
                   {week.map((day, di) => {
                     const leave = empLeaves[di]
@@ -113,7 +130,7 @@ export default function Calendar({ leaves, employees, currentUser, isAdmin, isSu
                     return (
                       <div
                         key={format(day, 'yyyy-MM-dd')}
-                        className={`day-cell ${isWeekend(day) ? 'weekend' : ''} ${isToday(day) ? 'today' : ''} ${leave ? 'on-leave' : ''} ${leave && emp.name === currentUser ? 'is-mine' : ''} ${pending ? 'is-pending' : ''}`}
+                        className={`day-cell ${isWeekend(day) ? 'weekend' : ''} ${isToday(day) ? 'today' : ''} ${leave ? 'on-leave' : ''} ${leave && sameName(emp.name, currentUser) ? 'is-mine' : ''} ${pending ? 'is-pending' : ''}`}
                         style={leave && inMonth ? { background: meta.bg } : {}}
                         title={leave ? `${meta.label} — ${STATUS_LABELS[leave.status]}${leave.note ? ' — ' + leave.note : ''}` : ''}
                       >
@@ -140,10 +157,10 @@ export default function Calendar({ leaves, employees, currentUser, isAdmin, isSu
             : 'Mes congés'}
         </h3>
         <div className="leave-list">
-          {(isAdmin ? monthLeaves : myLeaves).length === 0 ? (
+          {(isAdmin ? listLeaves : myLeaves).length === 0 ? (
             <div className="no-leaves">Aucun congé ce mois</div>
           ) : (
-            (isAdmin ? monthLeaves : myLeaves).map(l => (
+            (isAdmin ? listLeaves : myLeaves).map(l => (
               <div key={l.id} className="leave-item">
                 <div className="leave-item-info">
                   <span className="leave-item-name">{l.employee}</span>
@@ -161,7 +178,7 @@ export default function Calendar({ leaves, employees, currentUser, isAdmin, isSu
                   <span className="leave-item-type">
                     {(TYPE_META[l.type] || FALLBACK_TYPE_META).short} {(TYPE_META[l.type] || FALLBACK_TYPE_META).label}
                   </span>
-                  {(isAdmin || l.employee === currentUser) && (
+                  {(isAdmin || sameName(l.employee, currentUser)) && (
                     <button
                       className="btn-danger"
                       onClick={() => {

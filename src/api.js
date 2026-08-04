@@ -1,10 +1,13 @@
-// Firestore-backed data layer — no server needed.
+// Data layer : congés dans Firestore, personnel depuis RH Compliance
+// (via la fonction serverless /api/roster — voir api/roster.js).
 import {
-  collection, getDocs, addDoc, updateDoc, deleteDoc,
-  doc, query, orderBy, serverTimestamp
+  collection, getDocs, addDoc, deleteDoc,
+  doc, query, orderBy, serverTimestamp, runTransaction
 } from 'firebase/firestore'
 import { db } from './firebase'
-import { ALL_EMPLOYEES, SUPER_ADMIN_NAMES, TEAMS, getTeamOf } from './employees'
+import { GLOBAL_SUPER_ADMINS } from './employees'
+import { initialStatus, canDecide, isApprover } from './leavePolicy'
+import { normName } from './utils/names'
 
 const LEAVES_COL = 'leaves'
 
@@ -16,24 +19,49 @@ export async function fetchLeaves() {
   return snap.docs.map(d => ({ id: d.id, ...d.data() }))
 }
 
-export async function addLeave(leave) {
+// `roster` = lignes RH (fetchEmployees) — sert à déterminer le statut initial.
+export async function addLeave(leave, roster = []) {
+  const employee = leave.employee
+  const submittedBy = leave.submittedBy || employee
   const data = {
-    employee: leave.employee,
+    employee,
     startDate: leave.startDate,
     endDate: leave.endDate,
     type: leave.type,
     note: leave.note || '',
-    status: 'approved', // direct approval, no manager flow for now
+    // Workflow manager : pending sauf déclaration (arrêt maladie), saisie
+    // par un approbateur, admin global, ou équipe sans approbateur configuré.
+    status: initialStatus({ type: leave.type, employee, submittedBy }, roster),
+    submittedBy,
+    decidedBy: null,
+    decidedAt: null,
     createdAt: serverTimestamp(),
+  }
+  // Une saisie par un approbateur pour quelqu'un d'autre vaut validation.
+  if (data.status === 'approved' && normName(submittedBy) !== normName(employee)) {
+    data.decidedBy = submittedBy
+    data.decidedAt = serverTimestamp()
   }
   const ref = await addDoc(collection(db, LEAVES_COL), data)
   return { id: ref.id, ...data }
 }
 
-export async function decideLeave(id, user, action) {
+// Décision manager : transactionnelle pour éviter qu'une demande soit
+// décidée deux fois (deux managers cliquant en même temps).
+export async function decideLeave(id, user, action, roster = []) {
+  const status = action === 'approve' ? 'approved' : 'rejected'
   const ref = doc(db, LEAVES_COL, id)
-  await updateDoc(ref, { status: action === 'approve' ? 'approved' : 'rejected' })
-  return { id, status: action === 'approve' ? 'approved' : 'rejected' }
+  await runTransaction(db, async (tx) => {
+    const snap = await tx.get(ref)
+    if (!snap.exists()) throw new Error('Demande introuvable')
+    const leave = snap.data()
+    if (leave.status !== 'pending') throw new Error('Cette demande a déjà été traitée')
+    if (!canDecide(user, leave.employee, roster)) {
+      throw new Error("Seul un manager de l'équipe peut décider cette demande")
+    }
+    tx.update(ref, { status, decidedBy: user, decidedAt: serverTimestamp() })
+  })
+  return { id, status }
 }
 
 export async function deleteLeave(id) {
@@ -42,21 +70,31 @@ export async function deleteLeave(id) {
 }
 
 // ── Employees ────────────────────────────────────────────────────────────────
-// Built from the static list — no DB needed for the roster.
+// Personnel + organigramme depuis RH Compliance. role :
+//   'admin'    = admin global (voit tout, approuve tout)
+//   'manager'  = manage au moins un pôle (organigramme ou EXTRA_APPROVERS)
+//   'employee' = membre
 
 export async function fetchEmployees() {
-  return ALL_EMPLOYEES.map(name => {
-    const team = getTeamOf(name)
-    return {
-      name,
-      active: true,
-      team: team?.name || '',
-      teamKey: team?.key || '',
-      role: SUPER_ADMIN_NAMES.includes(name) ? 'admin' : 'employee',
-    }
-  })
+  const res = await fetch('/api/roster')
+  if (!res.ok) throw new Error('Impossible de charger le personnel RH')
+  const { items } = await res.json()
+  return items.map(e => ({
+    name: e.name,
+    email: e.email,
+    team: e.team,          // pôle de l'organigramme
+    teamKey: e.team,
+    position: e.position,
+    manager: !!e.manager,  // manager de son pôle (organigramme)
+    type: e.type,
+    active: true,
+    role: GLOBAL_SUPER_ADMINS.some(a => normName(a) === normName(e.name)) ? 'admin'
+      : isApprover(e.name, items) ? 'manager'
+      : 'employee',
+  }))
 }
 
 export async function saveEmployee() {
-  // No-op for now — roster is managed in src/employees.js
+  // No-op — le personnel se gère dans RH Compliance
+  // (https://rh-compliance.vercel.app), les approbateurs dans src/employees.js.
 }

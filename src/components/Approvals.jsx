@@ -2,21 +2,15 @@ import { useState } from 'react'
 import { format, parseISO } from 'date-fns'
 import { fr } from 'date-fns/locale'
 import { TYPE_META } from '../constants'
+import { findByName } from '../utils/names'
 
-// Pending-request queue for managers (their team) and admins (everyone).
-export default function Approvals({ employees, leaves, currentUser, onDecide }) {
+// File d'attente des demandes que l'utilisateur courant peut décider.
+// `pending` arrive déjà filtré par App.jsx via leavePolicy.canDecide
+// (managers → leur(s) équipe(s), jamais leur propre demande ; admins → tout).
+export default function Approvals({ employees, pending, onDecide }) {
   const [busy, setBusy] = useState(null) // leave id being processed
-  const me = employees.find(e => e.name === currentUser)
-  const isAdmin = me?.role === 'admin'
 
-  const teamOf = name => employees.find(e => e.name === name)?.team
-
-  const pending = leaves.filter(l =>
-    l.status === 'pending' &&
-    // explicit `me` guard: a user absent from the roster must see nothing
-    (isAdmin || (me && teamOf(l.employee) === me.team)) &&
-    (isAdmin || l.employee !== currentUser) // managers never decide their own
-  )
+  const teamOf = name => findByName(employees, name)?.team
 
   async function decide(id, action) {
     setBusy(id)
