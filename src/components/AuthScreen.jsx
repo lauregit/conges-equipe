@@ -10,6 +10,11 @@ import { saveProfile } from '../hooks/useAuth'
 // Step 1 – Login or Signup
 // Step 2 – After signup: pick your name from the RH Compliance personnel list
 
+// SSO interne : les identifiants Certilogia (hub certideal) sont validés par
+// certilogia-admin, puis un compte Firebase miroir (même email + mot de passe)
+// est connecté/créé silencieusement — Firestore exige un utilisateur Firebase.
+const CERTILOGIA_ADMIN = 'https://certilogia-admin.vercel.app'
+
 export default function AuthScreen({ firebaseUser, onProfileSaved }) {
   // Personnel officiel (RH Compliance) pour le sélecteur de nom.
   const [rosterNames, setRosterNames] = useState([])
@@ -21,7 +26,7 @@ export default function AuthScreen({ firebaseUser, onProfileSaved }) {
       .then(d => setRosterNames(d.items.map(i => i.name)))
       .catch(() => setRosterError('Impossible de charger la liste du personnel — réessayez.'))
   }, [firebaseUser])
-  const [tab, setTab] = useState('login') // 'login' | 'signup'
+  const [tab, setTab] = useState('certilogia') // 'certilogia' | 'login' | 'signup'
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [confirm, setConfirm] = useState('')
@@ -84,22 +89,67 @@ export default function AuthScreen({ firebaseUser, onProfileSaved }) {
       setError('Les mots de passe ne correspondent pas')
       return
     }
-    if (password.length < 6) {
+    if (tab !== 'certilogia' && password.length < 6) {
       setError('Le mot de passe doit faire au moins 6 caractères')
       return
     }
     setLoading(true)
     try {
-      if (tab === 'login') {
+      if (tab === 'certilogia') {
+        await loginWithCertilogia()
+      } else if (tab === 'login') {
         await signInWithEmailAndPassword(auth, email, password)
       } else {
         await createUserWithEmailAndPassword(auth, email, password)
         // onAuthStateChanged will fire → profile is null → shows name picker
       }
     } catch (err) {
-      setError(friendlyError(err.code))
+      setError(err.friendly || friendlyError(err.code))
     } finally {
       setLoading(false)
+    }
+  }
+
+  // 1) Valide les identifiants auprès de certilogia-admin (SSO interne).
+  // 2) Connecte (ou crée) le compte Firebase miroir avec les mêmes identifiants
+  //    — Firestore exige un utilisateur Firebase.
+  async function loginWithCertilogia() {
+    let res
+    try {
+      res = await fetch(`${CERTILOGIA_ADMIN}/api/auth-login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password }),
+      })
+    } catch {
+      const e = new Error('offline'); e.friendly = 'Certilogia injoignable — réessayez.'; throw e
+    }
+    if (res.status === 401) { const e = new Error('bad'); e.friendly = 'Identifiants Certilogia incorrects'; throw e }
+    if (res.status === 403) { const e = new Error('off'); e.friendly = 'Compte Certilogia désactivé'; throw e }
+    if (!res.ok) { const e = new Error('err'); e.friendly = 'Erreur Certilogia — réessayez.'; throw e }
+    const { session } = await res.json()
+    // Jeton conservé (convention certilogia_token) pour d'éventuels appels API.
+    localStorage.setItem('certilogia_token', session.token)
+    localStorage.setItem('certilogia_user', JSON.stringify(session.user))
+
+    try {
+      await signInWithEmailAndPassword(auth, email, password)
+    } catch (err) {
+      if (err.code === 'auth/user-not-found') {
+        await createUserWithEmailAndPassword(auth, email, password)
+      } else if (err.code === 'auth/invalid-credential' || err.code === 'auth/wrong-password') {
+        // Le compte miroir existe avec un ancien mot de passe : tenter la
+        // création échouerait aussi — guider vers la réinitialisation.
+        try {
+          await createUserWithEmailAndPassword(auth, email, password)
+        } catch {
+          const e = new Error('drift')
+          e.friendly = 'Votre mot de passe Certilogia a changé — cliquez « Mot de passe oublié » (onglet Connexion) pour resynchroniser le compte lié.'
+          throw e
+        }
+      } else {
+        throw err
+      }
     }
   }
 
@@ -122,6 +172,10 @@ export default function AuthScreen({ firebaseUser, onProfileSaved }) {
 
         <div className="auth-tabs">
           <button
+            className={`auth-tab ${tab === 'certilogia' ? 'active' : ''}`}
+            onClick={() => { setTab('certilogia'); setError(''); setInfo('') }}
+          >🔑 Certilogia</button>
+          <button
             className={`auth-tab ${tab === 'login' ? 'active' : ''}`}
             onClick={() => { setTab('login'); setError(''); setInfo('') }}
           >Connexion</button>
@@ -130,6 +184,12 @@ export default function AuthScreen({ firebaseUser, onProfileSaved }) {
             onClick={() => { setTab('signup'); setError(''); setInfo('') }}
           >Créer un compte</button>
         </div>
+
+        {tab === 'certilogia' && (
+          <p style={{ fontSize: 12, color: '#64748b', margin: '0 0 12px' }}>
+            Utilisez votre email et mot de passe <strong>Certilogia</strong> (hub interne Certideal).
+          </p>
+        )}
 
         <form onSubmit={handleSubmit}>
           <div style={{ marginBottom: 14 }}>
@@ -170,7 +230,10 @@ export default function AuthScreen({ firebaseUser, onProfileSaved }) {
           {info && <p className="auth-info">{info}</p>}
 
           <button type="submit" className="btn-primary auth-submit" disabled={loading}>
-            {loading ? 'Chargement...' : tab === 'login' ? 'Se connecter →' : 'Créer mon compte →'}
+            {loading ? 'Chargement...'
+              : tab === 'certilogia' ? 'Se connecter avec Certilogia →'
+              : tab === 'login' ? 'Se connecter →'
+              : 'Créer mon compte →'}
           </button>
 
           {tab === 'login' && (

@@ -78,6 +78,9 @@ export default function App() {
 
   async function handleLogout() {
     await signOut(auth)
+    // Nettoie aussi la session Certilogia (SSO interne) le cas échéant.
+    localStorage.removeItem('certilogia_token')
+    localStorage.removeItem('certilogia_user')
     setView('calendar')
     setLeaves([])
     setEmployees([])
