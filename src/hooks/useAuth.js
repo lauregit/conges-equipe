@@ -2,7 +2,8 @@ import { useState, useEffect } from 'react'
 import { onAuthStateChanged } from 'firebase/auth'
 import { doc, getDoc, setDoc } from 'firebase/firestore'
 import { auth, db } from '../firebase'
-import { SUPER_ADMIN_NAMES, GLOBAL_SUPER_ADMINS, getTeamOf, getVisibleTeams } from '../employees'
+import { GLOBAL_SUPER_ADMINS } from '../employees'
+import { normName } from '../utils/names'
 
 // Loads or creates the Firestore user profile for a Firebase user.
 export async function loadOrCreateProfile(firebaseUser) {
@@ -22,25 +23,26 @@ export function useAuth() {
   const [state, setState] = useState({
     firebaseUser: undefined, // undefined = loading, null = logged out
     profile: null,
-    isSuperAdmin: false,
+    isGlobalAdmin: false,
     loading: true,
   })
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (fbUser) => {
       if (!fbUser) {
-        setState({ firebaseUser: null, profile: null, isSuperAdmin: false, loading: false })
+        setState({ firebaseUser: null, profile: null, isGlobalAdmin: false, loading: false })
         return
       }
       const profile = await loadOrCreateProfile(fbUser)
       const name = profile?.name
+      // Les rôles manager dépendent de l'organigramme RH (chargé après login) ;
+      // seul le statut d'admin global est connu statiquement.
       setState({
         firebaseUser: fbUser,
         profile,
-        isSuperAdmin: name ? SUPER_ADMIN_NAMES.includes(name) : false,
-        isGlobalAdmin: name ? GLOBAL_SUPER_ADMINS.includes(name) : false,
-        myTeam: name ? getTeamOf(name) : null,
-        visibleTeamKeys: name ? getVisibleTeams(name) : [],
+        isGlobalAdmin: name
+          ? GLOBAL_SUPER_ADMINS.some(a => normName(a) === normName(name))
+          : false,
         loading: false,
       })
     })

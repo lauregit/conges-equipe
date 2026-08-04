@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import {
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
@@ -6,12 +6,21 @@ import {
 } from 'firebase/auth'
 import { auth } from '../firebase'
 import { saveProfile } from '../hooks/useAuth'
-import { ALL_EMPLOYEES } from '../employees'
 
 // Step 1 – Login or Signup
-// Step 2 – After signup: pick your name from the list
+// Step 2 – After signup: pick your name from the RH Compliance personnel list
 
 export default function AuthScreen({ firebaseUser, onProfileSaved }) {
+  // Personnel officiel (RH Compliance) pour le sélecteur de nom.
+  const [rosterNames, setRosterNames] = useState([])
+  const [rosterError, setRosterError] = useState('')
+  useEffect(() => {
+    if (!firebaseUser) return
+    fetch('/api/roster')
+      .then(r => { if (!r.ok) throw new Error(); return r.json() })
+      .then(d => setRosterNames(d.items.map(i => i.name)))
+      .catch(() => setRosterError('Impossible de charger la liste du personnel — réessayez.'))
+  }, [firebaseUser])
   const [tab, setTab] = useState('login') // 'login' | 'signup'
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -34,11 +43,14 @@ export default function AuthScreen({ firebaseUser, onProfileSaved }) {
           <p>Associez votre compte à votre nom dans l'équipe</p>
           <label>Mon nom</label>
           <select value={selectedName} onChange={e => setSelectedName(e.target.value)}>
-            <option value="">— Sélectionner mon nom —</option>
-            {ALL_EMPLOYEES.map(n => (
+            <option value="">
+              {rosterNames.length === 0 && !rosterError ? 'Chargement du personnel…' : '— Sélectionner mon nom —'}
+            </option>
+            {rosterNames.map(n => (
               <option key={n} value={n}>{n}</option>
             ))}
           </select>
+          {rosterError && <p className="auth-error">{rosterError}</p>}
           {error && <p className="auth-error">{error}</p>}
           <button
             className="btn-primary"
