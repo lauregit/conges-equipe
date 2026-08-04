@@ -11,9 +11,9 @@
 // Chaque fonction accepte une config optionnelle pour les tests ;
 // par défaut, la vraie configuration de l'app.
 
-import { EXTRA_APPROVERS, GLOBAL_SUPER_ADMINS } from './employees'
-import { DECLARED_TYPES } from './constants'
-import { normName, findByName } from './utils/names'
+import { EXTRA_APPROVERS, GLOBAL_SUPER_ADMINS } from './employees.js'
+import { DECLARED_TYPES } from './constants.js'
+import { normName, findByName } from './utils/names.js'
 
 const DEFAULT_CONFIG = { extraApprovers: EXTRA_APPROVERS, globalAdmins: GLOBAL_SUPER_ADMINS }
 
