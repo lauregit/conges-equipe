@@ -95,10 +95,7 @@ export default function App() {
   async function handleSubmitLeave(leave) {
     try {
       const targetEmployee = leave.employee || user
-      const created = await addLeave(
-        { ...leave, employee: targetEmployee, submittedBy: user },
-        employees
-      )
+      const created = await addLeave({ ...leave, employee: targetEmployee, submittedBy: user })
       await loadAll()
       showNotification(
         created.status === 'pending' ? 'Demande envoyée pour approbation ✓'
@@ -114,7 +111,7 @@ export default function App() {
 
   async function handleDecide(id, action) {
     try {
-      await decideLeave(id, user, action, employees)
+      await decideLeave(id, user, action)
       await loadAll()
       showNotification(action === 'approve' ? 'Demande approuvée ✓' : 'Demande refusée')
     } catch (err) {
@@ -228,7 +225,12 @@ export default function App() {
             />
           )}
           {view === 'team' && (
-            <TeamSettings employees={employees} />
+            <TeamSettings
+              employees={employees}
+              currentUser={user}
+              isGlobalAdmin={isGlobalAdmin}
+              onImported={loadAll}
+            />
           )}
           {view === 'request' && (
             <LeaveForm

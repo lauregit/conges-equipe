@@ -1,21 +1,19 @@
 import { useState, useEffect } from 'react'
 import { onAuthStateChanged } from 'firebase/auth'
-import { doc, getDoc, setDoc } from 'firebase/firestore'
-import { auth, db } from '../firebase'
+import { auth } from '../firebase'
 import { GLOBAL_SUPER_ADMINS } from '../employees'
 import { normName } from '../utils/names'
+import { fetchProfile, saveProfileApi } from '../api'
 
-// Loads or creates the Firestore user profile for a Firebase user.
+// Firebase ne sert qu'à l'AUTHENTIFICATION (identité + mot de passe).
+// Le profil (uid -> nom du personnel) vit dans Neon via /api/profile.
+
 export async function loadOrCreateProfile(firebaseUser) {
-  const ref = doc(db, 'users', firebaseUser.uid)
-  const snap = await getDoc(ref)
-  if (snap.exists()) return snap.data()
-  return null // Profile not set yet → app shows name picker
+  return fetchProfile(firebaseUser.uid) // null si pas encore de profil → name picker
 }
 
 export async function saveProfile(uid, name, email) {
-  const ref = doc(db, 'users', uid)
-  await setDoc(ref, { name, email })
+  await saveProfileApi(uid, name, email)
   return { name, email }
 }
 
@@ -33,10 +31,13 @@ export function useAuth() {
         setState({ firebaseUser: null, profile: null, isGlobalAdmin: false, loading: false })
         return
       }
-      const profile = await loadOrCreateProfile(fbUser)
+      let profile = null
+      try {
+        profile = await loadOrCreateProfile(fbUser)
+      } catch (err) {
+        console.error('profile load failed:', err)
+      }
       const name = profile?.name
-      // Les rôles manager dépendent de l'organigramme RH (chargé après login) ;
-      // seul le statut d'admin global est connu statiquement.
       setState({
         firebaseUser: fbUser,
         profile,
