@@ -7,6 +7,11 @@ export const LEAVE_TYPES = ['conge_paye', 'conge_sans_solde', 'teletravail', 'ar
 // rather than REQUESTED (pending until a manager approves).
 export const DECLARED_TYPES = ['arret_maladie']
 
+// Durée maximale d'une demande "normale" (jours calendaires consécutifs, bornes
+// incluses). Au-delà, c'est une DEMANDE SPÉCIALE : validable uniquement par la
+// direction (admins globaux), jamais par le superviseur RH habituel.
+export const MAX_STANDARD_LEAVE_DAYS = 14
+
 export const TYPE_META = {
   conge_paye:       { label: 'Congé payé',      emoji: '🏖️', short: 'CP',  bg: '#bfdbfe' },
   conge_sans_solde: { label: 'Congé sans solde', emoji: '💸', short: 'CSS', bg: '#fed7aa' },

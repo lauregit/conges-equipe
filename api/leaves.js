@@ -1,6 +1,6 @@
 import { neon } from '@neondatabase/serverless';
 import { LEAVE_TYPES } from '../src/constants.js';
-import { initialStatus, canDecide, canSee, isGlobalAdmin } from '../src/leavePolicy.js';
+import { initialStatus, canDecide, canDecideLeave, isSpecialRequest, canSee, isGlobalAdmin } from '../src/leavePolicy.js';
 import { normName, findByName, sameName } from '../src/utils/names.js';
 import { loadRoster } from './_rhroster.js';
 import { requireProfile } from './_auth.js';
@@ -157,7 +157,11 @@ export default async function handler(req, res, overrides = {}) {
       }
 
       const note = (body.note || '').trim().slice(0, MAX_NOTE) || null;
-      const status = initialStatus({ type, employee, submittedBy: actor }, roster, config);
+      // Demande spéciale (> 2 semaines) : reste en attente et n'est validable que par la
+      // direction — sauf si c'est justement un admin global qui la saisit.
+      const special = isSpecialRequest({ startDate, endDate, type });
+      let status = initialStatus({ type, employee, submittedBy: actor }, roster, config);
+      if (special && !isGlobalAdmin(actor, config)) status = 'pending';
       const decided = status === 'approved' && !sameName(actor, employee);
 
       const rows = await sql(
@@ -167,7 +171,7 @@ export default async function handler(req, res, overrides = {}) {
          RETURNING id::text`,
         [employee, startDate, endDate, type, note, status, actor, decided ? actor : null]
       );
-      res.status(201).json({ id: rows[0].id, status });
+      res.status(201).json({ id: rows[0].id, status, special });
       return;
     }
 
@@ -193,8 +197,11 @@ export default async function handler(req, res, overrides = {}) {
       }
 
       const roster = await loadFullRoster(sql, overrides);
-      if (!canDecide(actor, leave.employee, roster, config)) {
-        res.status(403).json({ error: 'Seul le superviseur RH désigné peut décider cette demande' });
+      if (!canDecideLeave(actor, leave, roster, config)) {
+        const msg = isSpecialRequest(leave)
+          ? 'Demande spéciale (plus de 2 semaines) : validation réservée à la direction (Laure/Yoann).'
+          : 'Seul le superviseur RH désigné peut décider cette demande';
+        res.status(403).json({ error: msg });
         return;
       }
 

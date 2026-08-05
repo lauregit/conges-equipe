@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   approversOf, canDecide, isApprover, initialStatus,
   chainOf, subtreeOf, canSee, isGlobalAdmin, MAX_CHAIN,
+  leaveDayCount, isSpecialRequest, canDecideLeave,
 } from '../src/leavePolicy.js'
 import { normName, sameName, findByName } from '../src/utils/names.js'
 
@@ -130,5 +131,36 @@ describe('initialStatus', () => {
     const none = { extraApprovers: {}, globalAdmins: [] }
     expect(initialStatus({ type: 'conge_paye', employee: 'Hanna BOICHUK' }, ROSTER, none)).toBe('approved')
     expect(isGlobalAdmin('Laure COHEN', CONFIG)).toBe(true)
+  })
+})
+
+describe('demande spéciale (> 2 semaines)', () => {
+  const CFG = { extraApprovers: {}, globalAdmins: ['Laure COHEN', 'Yoann VALENSI'] }
+  it('leaveDayCount compte les jours bornes incluses', () => {
+    expect(leaveDayCount('2026-03-01', '2026-03-01')).toBe(1)
+    expect(leaveDayCount('2026-03-01', '2026-03-14')).toBe(14)
+    expect(leaveDayCount('2026-03-01', '2026-03-15')).toBe(15)
+    expect(leaveDayCount('2026-03-15', '2026-03-01')).toBe(0) // inversé
+    expect(leaveDayCount('', '2026-03-01')).toBe(0)
+  })
+  it('isSpecialRequest : > 14 jours et type non déclaré', () => {
+    expect(isSpecialRequest({ startDate: '2026-03-01', endDate: '2026-03-14', type: 'conge_paye' })).toBe(false)
+    expect(isSpecialRequest({ startDate: '2026-03-01', endDate: '2026-03-15', type: 'conge_paye' })).toBe(true)
+    expect(isSpecialRequest({ startDate: '2026-03-01', endDate: '2026-03-15', type: 'conge_sans_solde' })).toBe(true)
+    // un arrêt maladie (déclaré) n'est jamais "spécial", même long
+    expect(isSpecialRequest({ startDate: '2026-03-01', endDate: '2026-04-30', type: 'arret_maladie' })).toBe(false)
+  })
+  it('canDecideLeave : demande normale = superviseur RH ; spéciale = direction seulement', () => {
+    const normal = { employee: 'Vithusa VASIDDAN', startDate: '2026-03-01', endDate: '2026-03-10', type: 'conge_paye' }
+    const special = { employee: 'Vithusa VASIDDAN', startDate: '2026-03-01', endDate: '2026-03-20', type: 'conge_paye' }
+    // normale : le superviseur RH (Andrea) décide
+    expect(canDecideLeave('Andrea LEVY', normal, ROSTER, CFG)).toBe(true)
+    // spéciale : le superviseur RH ne peut PLUS décider
+    expect(canDecideLeave('Andrea LEVY', special, ROSTER, CFG)).toBe(false)
+    // spéciale : seule la direction (admin global) décide
+    expect(canDecideLeave('Laure COHEN', special, ROSTER, CFG)).toBe(true)
+    // personne ne valide sa propre demande spéciale, même admin
+    const selfSpecial = { ...special, employee: 'Laure COHEN' }
+    expect(canDecideLeave('Laure COHEN', selfSpecial, ROSTER, CFG)).toBe(false)
   })
 })

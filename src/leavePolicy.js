@@ -14,7 +14,7 @@
 // pôle (organigramme) et approbateurs délégués → plus les admins globaux.
 
 import { EXTRA_APPROVERS, GLOBAL_SUPER_ADMINS } from './employees.js'
-import { DECLARED_TYPES } from './constants.js'
+import { DECLARED_TYPES, MAX_STANDARD_LEAVE_DAYS } from './constants.js'
 import { normName, findByName } from './utils/names.js'
 
 export const MAX_CHAIN = 5
@@ -119,4 +119,30 @@ export function initialStatus({ type, employee, submittedBy }, roster, config = 
   if (normName(by) === normName(employee) && isGlobalAdmin(employee, config)) return 'approved'
   if (approversOf(employee, roster, config).length > 0) return 'pending'
   return 'approved'
+}
+
+// Nombre de jours calendaires d'une demande, bornes incluses (2026-01-01 → 2026-01-01 = 1).
+export function leaveDayCount(startDate, endDate) {
+  if (!startDate || !endDate) return 0
+  const a = Date.parse(`${startDate}T00:00:00Z`)
+  const b = Date.parse(`${endDate}T00:00:00Z`)
+  if (Number.isNaN(a) || Number.isNaN(b) || b < a) return 0
+  return Math.round((b - a) / 86400000) + 1
+}
+
+// "Demande spéciale" = congé (non déclaré) de plus de MAX_STANDARD_LEAVE_DAYS jours.
+// Elle ne peut être validée que par un admin global (direction), pas par le superviseur RH.
+export function isSpecialRequest({ startDate, endDate, type } = {}) {
+  if (DECLARED_TYPES.includes(type)) return false
+  return leaveDayCount(startDate, endDate) > MAX_STANDARD_LEAVE_DAYS
+}
+
+// Qui peut décider CETTE demande : pour une demande spéciale, uniquement les admins
+// globaux ; sinon la règle normale (superviseur RH désigné / managers / délégués / admins).
+export function canDecideLeave(actor, leave, roster, config = DEFAULT_CONFIG) {
+  if (!actor || !leave) return false
+  if (isSpecialRequest(leave)) {
+    return isGlobalAdmin(actor, config) && normName(actor) !== normName(leave.employee)
+  }
+  return canDecide(actor, leave.employee, roster, config)
 }

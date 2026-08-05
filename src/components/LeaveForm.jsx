@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { format } from 'date-fns'
 import { doLeavesOverlap } from '../utils/dateHelpers'
 import { LEAVE_TYPES as TYPE_KEYS, TYPE_META, DECLARED_TYPES } from '../constants'
-import { initialStatus } from '../leavePolicy'
+import { initialStatus, isSpecialRequest } from '../leavePolicy'
 import { sameName } from '../utils/names'
 const LEAVE_TYPES = TYPE_KEYS.map(key => ({ key, label: `${TYPE_META[key].emoji} ${TYPE_META[key].label}` }))
 
@@ -23,6 +23,7 @@ export default function LeaveForm({ onSubmit, onCancel, currentUser, isSuperAdmi
 
   const declared = DECLARED_TYPES.includes(type)
   const validRange = startDate && endDate && startDate <= endDate
+  const special = validRange && isSpecialRequest({ startDate, endDate, type })
   const overlaps = validRange && targetLeaves.some(l =>
     l.status !== 'rejected' && doLeavesOverlap(startDate, endDate, l)
   )
@@ -109,6 +110,12 @@ export default function LeaveForm({ onSubmit, onCancel, currentUser, isSuperAdmi
           {overlaps && (
             <div className="banner banner-warning" role="alert">
               ⚠️ Vous avez déjà un congé sur ces dates.
+            </div>
+          )}
+
+          {special && (
+            <div className="banner banner-warning" role="alert">
+              ⚠️ Demande spéciale : plus de 2 semaines. Elle devra être validée par la direction (Laure / Yoann), pas par votre superviseur habituel.
             </div>
           )}
 
