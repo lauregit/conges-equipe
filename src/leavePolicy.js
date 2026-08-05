@@ -51,13 +51,15 @@ export function chainOf(name, roster) {
 }
 
 // `viewer` voit-il les données de `employee` ? (au-dessus dans la chaîne,
-// soi-même, ou admin global)
+// soi-même, admin global — ou son approbateur désigné : on doit pouvoir
+// VOIR les demandes qu'on doit décider, même hors chaîne N+1)
 export function canSee(viewer, employee, roster, config = DEFAULT_CONFIG) {
   if (!viewer) return false
   if (normName(viewer) === normName(employee)) return true
   if (isGlobalAdmin(viewer, config)) return true
   const v = normName(viewer)
-  return chainOf(employee, roster).some(n => normName(n) === v)
+  if (chainOf(employee, roster).some(n => normName(n) === v)) return true
+  return canDecide(viewer, employee, roster, config)
 }
 
 // Tout le sous-arbre de `name` : les personnes dont la chaîne le contient.
