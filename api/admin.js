@@ -3,9 +3,14 @@ import { requireProfile } from './_auth.js';
 import { loadConfig, saveConfig, BOOTSTRAP_ADMIN_EMAILS } from './_config.js';
 import { loadRoster, saveOrgHierarchy, saveOrgReplacements, saveOrgTeamOverride } from './_rhroster.js';
 import { normName, findByName, sameName } from '../src/utils/names.js';
-import { isGlobalAdmin, chainOf, MAX_CHAIN } from '../src/leavePolicy.js';
+import { isGlobalAdmin, isApprover, canSee, chainOf, MAX_CHAIN } from '../src/leavePolicy.js';
 
-// Système d'administration (admins globaux uniquement) :
+// Système d'administration.
+// Admins globaux : tout. MANAGERS (approbateurs) : édition de l'organigramme
+// (chaîne, superviseur RH, remplaçants, pôle d'affichage) LIMITÉE à leur
+// périmètre (sous-arbre + personnes dont ils sont validateurs), jamais
+// eux-mêmes. Comptes et config : admins uniquement.
+// Détail :
 //   GET  -> { bindings, config, hierarchy }
 //   POST {action:'approve-binding'|'reject-binding', uid}
 //        {action:'save-config', config:{globalAdmins, extraApprovers}}
@@ -42,18 +47,23 @@ export default async function handler(req, res, overrides = {}) {
     if (!me) return;
 
     const config = overrides.config || await loadConfig(sql);
-    if (!isGlobalAdmin(me.name, config) && !BOOTSTRAP_ADMIN_EMAILS.includes(me.email)) {
-      res.status(403).json({ error: 'Réservé aux admins globaux' });
+    const roster = overrides.roster || await loadRoster();
+    const isAdmin = isGlobalAdmin(me.name, config) || BOOTSTRAP_ADMIN_EMAILS.includes(me.email);
+    if (!isAdmin && !isApprover(me.name, roster, config)) {
+      res.status(403).json({ error: 'Réservé aux managers et admins' });
       return;
     }
+    // Un manager n'agit que dans son périmètre, et jamais sur lui-même.
+    const canManage = (employee) =>
+      isAdmin || (!sameName(me.name, employee) && canSee(me.name, employee, roster, config));
 
     if (req.method === 'GET') {
-      const [bindings, roster] = await Promise.all([
-        sql(`SELECT uid, name, email, status, email_verified_match AS "emailMatch",
-                    to_char(created_at, 'YYYY-MM-DD') AS "createdAt"
-             FROM conges_profiles ORDER BY status DESC, name`),
-        overrides.roster ? Promise.resolve(overrides.roster) : loadRoster(),
-      ]);
+      // Les liaisons de comptes sont sensibles : admins uniquement.
+      const bindings = isAdmin
+        ? await sql(`SELECT uid, name, email, status, email_verified_match AS "emailMatch",
+                            to_char(created_at, 'YYYY-MM-DD') AS "createdAt"
+                     FROM conges_profiles ORDER BY status DESC, name`)
+        : [];
       // L'organigramme vient de la table partagée rh_org (via le roster).
       const hierarchy = roster
         .filter(r => r.supervisor || r.rhSupervisor || (r.replacements || []).length > 0)
@@ -72,6 +82,10 @@ export default async function handler(req, res, overrides = {}) {
       const { action } = body;
 
       if (action === 'approve-binding' || action === 'reject-binding') {
+        if (!isAdmin) {
+          res.status(403).json({ error: 'Réservé aux admins globaux' });
+          return;
+        }
         if (!body.uid) {
           res.status(400).json({ error: 'uid requis' });
           return;
@@ -86,6 +100,10 @@ export default async function handler(req, res, overrides = {}) {
       }
 
       if (action === 'save-config') {
+        if (!isAdmin) {
+          res.status(403).json({ error: 'Réservé aux admins globaux' });
+          return;
+        }
         const cfg = body.config || {};
         if (!Array.isArray(cfg.globalAdmins) || cfg.globalAdmins.length === 0) {
           res.status(400).json({ error: 'globalAdmins : liste non vide requise' });
@@ -112,7 +130,10 @@ export default async function handler(req, res, overrides = {}) {
           res.status(400).json({ error: 'employee requis' });
           return;
         }
-        const roster = overrides.roster || await loadRoster();
+        if (!canManage(employee)) {
+          res.status(403).json({ error: 'Hors de votre périmètre' });
+          return;
+        }
         for (const [label, v] of [['employee', employee], ['supervisor', supervisor], ['rhSupervisor', rhSupervisor]]) {
           if (v && !findByName(roster, v)) {
             res.status(400).json({ error: `${label} : « ${v} » ne figure pas dans le personnel RH` });
@@ -158,7 +179,10 @@ export default async function handler(req, res, overrides = {}) {
           res.status(400).json({ error: 'employee et replacements (liste) sont requis' });
           return;
         }
-        const roster = overrides.roster || await loadRoster();
+        if (!canManage(employee)) {
+          res.status(403).json({ error: 'Hors de votre périmètre' });
+          return;
+        }
         const empRow = findByName(roster, employee);
         if (!empRow) {
           res.status(400).json({ error: `« ${employee} » ne figure pas dans le personnel RH` });
@@ -188,7 +212,10 @@ export default async function handler(req, res, overrides = {}) {
           res.status(400).json({ error: 'employee requis' });
           return;
         }
-        const roster = overrides.roster || await loadRoster();
+        if (!canManage(employee)) {
+          res.status(403).json({ error: 'Hors de votre périmètre' });
+          return;
+        }
         const empRow = findByName(roster, employee);
         if (!empRow) {
           res.status(400).json({ error: `« ${employee} » ne figure pas dans le personnel RH` });

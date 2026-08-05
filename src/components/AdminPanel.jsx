@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { fetchAdmin, adminAction } from '../api'
 import { sameName, normName } from '../utils/names'
-import { chainOf } from '../leavePolicy'
+import { chainOf, canSee } from '../leavePolicy'
 
 // ⚙️ Administration (admins globaux) :
 // 1. Comptes : liaisons compte→nom en attente (email ≠ email RH) à valider,
@@ -10,7 +10,9 @@ import { chainOf } from '../leavePolicy'
 //    niveaux — visibilité descendante) et son SUPERVISEUR RH (seul
 //    destinataire de ses demandes de congé).
 // 3. Admins globaux (config en base).
-export default function AdminPanel({ employees, onChanged }) {
+// Admins globaux : tout. Managers : uniquement la section organigramme,
+// limitée à leur périmètre (sous-arbre + personnes qu'ils valident).
+export default function AdminPanel({ employees, currentUser, isGlobalAdmin = false, config, onChanged }) {
   const [data, setData] = useState(null) // { bindings, config, hierarchy }
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(null)
@@ -45,9 +47,15 @@ export default function AdminPanel({ employees, onChanged }) {
   const pending = data.bindings.filter(b => b.status === 'pending')
   const hierByName = new Map(data.hierarchy.map(h => [normName(h.employee), h]))
   const names = employees.map(e => e.name)
+  // Périmètre : admins → tout le monde ; manager → son sous-arbre + les
+  // personnes qu'il valide, jamais lui-même (le serveur applique la même règle).
+  const scoped = isGlobalAdmin
+    ? employees
+    : employees.filter(e =>
+        !sameName(e.name, currentUser) && canSee(currentUser, e.name, employees, config))
   const shown = filter
-    ? employees.filter(e => e.name.toLowerCase().includes(filter.toLowerCase()) || e.team.toLowerCase().includes(filter.toLowerCase()))
-    : employees
+    ? scoped.filter(e => e.name.toLowerCase().includes(filter.toLowerCase()) || e.team.toLowerCase().includes(filter.toLowerCase()))
+    : scoped
 
   // Pôles proposés pour l'affichage (les SAV se répartissent France/International).
   const poleChoices = [...new Set([
@@ -124,10 +132,10 @@ export default function AdminPanel({ employees, onChanged }) {
 
   return (
     <div className="team-container">
-      <h2>⚙️ Administration</h2>
+      <h2>{isGlobalAdmin ? '⚙️ Administration' : '🛠️ Mon équipe'}</h2>
       {error && <div className="banner banner-error">⚠️ {error}</div>}
 
-      <div className="presence-team">
+      {isGlobalAdmin && <div className="presence-team">
         <h3>Comptes en attente de validation <span className="presence-count">{pending.length}</span></h3>
         {pending.length === 0 ? (
           <div className="no-leaves">Aucune liaison en attente.</div>
@@ -143,7 +151,7 @@ export default function AdminPanel({ employees, onChanged }) {
             </div>
           </div>
         ))}
-      </div>
+      </div>}
 
       <div className="presence-team">
         <h3>Chaîne de commandement &amp; remplaçants <span className="presence-count">{data.hierarchy.length} définie(s)</span></h3>
@@ -167,7 +175,7 @@ export default function AdminPanel({ employees, onChanged }) {
         </div>
       </div>
 
-      <div className="presence-team">
+      {isGlobalAdmin && <div className="presence-team">
         <h3>Admins globaux</h3>
         <p className="team-hint">Voient tout, approuvent tout, gèrent cet onglet.</p>
         {(adminsDraft || data.config.globalAdmins).map((a, i) => (
@@ -201,7 +209,7 @@ export default function AdminPanel({ employees, onChanged }) {
             Enregistrer
           </button>
         </div>
-      </div>
+      </div>}
     </div>
   )
 }
