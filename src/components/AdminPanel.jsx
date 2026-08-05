@@ -49,11 +49,17 @@ export default function AdminPanel({ employees, onChanged }) {
     ? employees.filter(e => e.name.toLowerCase().includes(filter.toLowerCase()) || e.team.toLowerCase().includes(filter.toLowerCase()))
     : employees
 
+  // Pôles proposés pour l'affichage (les SAV se répartissent France/International).
+  const poleChoices = [...new Set([
+    ...employees.map(e => e.team),
+    'SAV — France', 'SAV — International',
+  ])].sort()
+
   function hierRow(emp) {
     const h = hierByName.get(normName(emp.name)) || {}
     const reps = h.replacements || []
     return (
-      <div key={emp.name} className="team-row" style={{ gridTemplateColumns: '1.3fr 0.8fr 1.1fr 1.1fr 1.1fr' }}>
+      <div key={emp.name} className="team-row" style={{ gridTemplateColumns: '1.2fr 0.7fr 1fr 1fr 1fr 0.9fr' }}>
         <span title={chainOf(emp.name, employees).join(' → ') || '—'}>
           {emp.name}
           <span className="team-tag">{emp.team}</span>
@@ -103,6 +109,15 @@ export default function AdminPanel({ employees, onChanged }) {
             {names.filter(n => !sameName(n, emp.name) && !reps.some(r => sameName(r, n))).map(n => <option key={n} value={n}>{n}</option>)}
           </select>
         </span>
+        <select
+          value={emp.teamOverride || ''}
+          aria-label={`Pôle d'affichage de ${emp.name}`}
+          disabled={busy === `t:${emp.name}`}
+          onChange={e => act({ action: 'set-team-override', employee: emp.name, teamOverride: e.target.value }, `t:${emp.name}`)}
+        >
+          <option value="">— Pôle (auto) —</option>
+          {poleChoices.map(t => <option key={t} value={t}>{t}</option>)}
+        </select>
       </div>
     )
   }

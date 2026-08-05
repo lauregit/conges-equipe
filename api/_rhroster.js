@@ -34,6 +34,30 @@ function groupOf(e) {
   return TEAM_TO_POLE[team] || team || 'Autre';
 }
 
+// La Logistique se décompose en pôles opérationnels : Expédition, Test,
+// Réparation, Pickup, Retour, RMA/Réception. Déduits du "team réel" et du
+// "poste réel" RH ; les non-classés restent en « Logistique » tout court
+// (reste à ranger — corriger côté RH Compliance ou via le pôle d'affichage).
+function logistiqueSubPole(e) {
+  const team = String(e.team || '').toUpperCase();
+  const poste = String(e.poste_reel || '').toUpperCase();
+  const both = `${team} ${poste}`;
+  if (/RMA|RECEPTION|RÉCEPTION|INIT/.test(both)) return 'RMA / Réception';
+  if (/RETOUR|REVERSE/.test(both)) return 'Retour';
+  if (/PICK/.test(both)) return 'Pickup';
+  if (/REPARA|RÉPARA/.test(both)) return 'Réparation';
+  if (/TEST/.test(both)) return 'Test';
+  if (/EXPE|EXPÉ|LIVRAISON|ECRASEMENT|COMMANDE/.test(both)) return 'Expédition';
+  return null;
+}
+
+function displayTeam(e) {
+  const group = groupOf(e);
+  if (group !== 'Logistique') return group;
+  const sub = logistiqueSubPole(e);
+  return sub ? `Logistique — ${sub}` : 'Logistique';
+}
+
 // Détection "manager" depuis l'organigramme RH (voir api/roster.js pour la
 // justification des motifs — attention aux faux positifs type
 // "assistant/junior/key account manager").
@@ -56,7 +80,7 @@ export async function loadRoster(sqlOverride) {
   const sql = sqlOverride || getRhSql();
   const [rows, orgRows] = await Promise.all([
     sql`SELECT data FROM rh_entities WHERE kind = 'employee'`,
-    sql`SELECT employee_id, supervisor_id, rh_supervisor_id, replacement_ids FROM rh_org`
+    sql`SELECT employee_id, supervisor_id, rh_supervisor_id, replacement_ids, team_override FROM rh_org`
       // 42P01 = table pas encore créée : roster sans organigramme. Toute
       // autre erreur remonte (ne pas dégrader silencieusement les approbations).
       .catch(err => { if (err?.code === '42P01') return []; throw err; }),
@@ -81,7 +105,8 @@ export async function loadRoster(sqlOverride) {
         id: e.id,
         name: `${String(e.first_name).trim()} ${String(e.last_name).trim()}`,
         email: e.email || null,
-        team: groupOf(e),
+        team: o?.team_override || displayTeam(e),
+        teamOverride: o?.team_override || null,
         position: e.position || e.poste_reel || null,
         manager: isOrgManager(e),
         type: e.type || null,
@@ -105,6 +130,18 @@ export async function saveOrgHierarchy(employeeId, supervisorId, rhSupervisorId,
               rh_supervisor_id = EXCLUDED.rh_supervisor_id,
               updated_at       = now(),
               updated_by       = EXCLUDED.updated_by`;
+}
+
+// Écrit le pôle d'affichage (ex. « SAV — France ») dans rh_org — le reste
+// de la ligne est préservé. null = retour au pôle automatique.
+export async function saveOrgTeamOverride(employeeId, teamOverride, updatedBy, sqlOverride) {
+  const sql = sqlOverride || getRhSql();
+  await sql`INSERT INTO rh_org (employee_id, team_override, updated_at, updated_by)
+            VALUES (${Number(employeeId)}, ${teamOverride}, now(), ${updatedBy})
+            ON CONFLICT (employee_id) DO UPDATE SET
+              team_override = EXCLUDED.team_override,
+              updated_at    = now(),
+              updated_by    = EXCLUDED.updated_by`;
 }
 
 // Écrit les remplaçants dans rh_org (supervisor/rh_supervisor préservés).
