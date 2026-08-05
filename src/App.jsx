@@ -168,7 +168,8 @@ export default function App() {
     { key: 'presence', label: '👥 Présence' },
     ...(canApprove ? [{ key: 'approvals', label: `✅ Approbations${pendingCount ? ` (${pendingCount})` : ''}` }] : []),
     { key: 'team', label: '🏢 Équipes' },
-    ...(amGlobalAdmin ? [{ key: 'admin', label: '⚙️ Admin' }] : []),
+    ...(amGlobalAdmin ? [{ key: 'admin', label: '⚙️ Admin' }]
+      : canApprove ? [{ key: 'admin', label: '🛠️ Mon équipe' }] : []),
   ]
 
   return (
@@ -252,8 +253,14 @@ export default function App() {
               onImported={loadAll}
             />
           )}
-          {view === 'admin' && amGlobalAdmin && (
-            <AdminPanel employees={employees} onChanged={loadAll} />
+          {view === 'admin' && (amGlobalAdmin || canApprove) && (
+            <AdminPanel
+              employees={employees}
+              currentUser={user}
+              isGlobalAdmin={amGlobalAdmin}
+              config={config}
+              onChanged={loadAll}
+            />
           )}
           {view === 'request' && (
             <LeaveForm
