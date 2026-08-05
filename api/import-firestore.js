@@ -1,7 +1,8 @@
 import { neon } from '@neondatabase/serverless';
-import { GLOBAL_SUPER_ADMINS } from '../src/employees.js';
 import { LEAVE_TYPES } from '../src/constants.js';
-import { normName } from '../src/utils/names.js';
+import { isGlobalAdmin } from '../src/leavePolicy.js';
+import { requireProfile } from './_auth.js';
+import { loadConfig, BOOTSTRAP_ADMIN_EMAILS } from './_config.js';
 
 // Import ONE-SHOT des congés Firestore vers Neon.
 // Les règles Firestore n'autorisent que les sessions de l'app : c'est donc le
@@ -24,7 +25,7 @@ const OK_STATUS = ['pending', 'approved', 'rejected'];
 export default async function handler(req, res, sqlOverride) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
   if (req.method === 'OPTIONS') {
     res.status(204).end();
@@ -36,13 +37,17 @@ export default async function handler(req, res, sqlOverride) {
   }
 
   try {
-    const body = typeof req.body === 'string' ? JSON.parse(req.body || '{}') : (req.body || {});
-    const { actor, leaves } = body;
-
-    if (!actor || !GLOBAL_SUPER_ADMINS.some(a => normName(a) === normName(actor))) {
+    const sqlAuth = getSql();
+    const me = await requireProfile(req, res, sqlAuth);
+    if (!me) return;
+    const config = await loadConfig(sqlAuth);
+    if (!isGlobalAdmin(me.name, config) && !BOOTSTRAP_ADMIN_EMAILS.includes(me.email)) {
       res.status(403).json({ error: 'Réservé aux admins globaux' });
       return;
     }
+
+    const body = typeof req.body === 'string' ? JSON.parse(req.body || '{}') : (req.body || {});
+    const { leaves } = body;
     if (!Array.isArray(leaves) || leaves.length === 0 || leaves.length > 2000) {
       res.status(400).json({ error: 'leaves: tableau de 1 à 2000 éléments requis' });
       return;

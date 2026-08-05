@@ -21,9 +21,10 @@ export default function AuthScreen({ firebaseUser, onProfileSaved }) {
   const [rosterError, setRosterError] = useState('')
   useEffect(() => {
     if (!firebaseUser) return
-    fetch('/api/roster')
-      .then(r => { if (!r.ok) throw new Error(); return r.json() })
-      .then(d => setRosterNames(d.items.map(i => i.name)))
+    // fetchRosterBundle envoie le jeton de session (l'annuaire est protégé).
+    import('../api')
+      .then(m => m.fetchRosterBundle())
+      .then(d => setRosterNames(d.employees.map(i => i.name)))
       .catch(() => setRosterError('Impossible de charger la liste du personnel — réessayez.'))
   }, [firebaseUser])
   const [tab, setTab] = useState('certilogia') // 'certilogia' | 'login' | 'signup'

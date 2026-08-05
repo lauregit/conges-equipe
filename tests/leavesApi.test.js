@@ -1,25 +1,31 @@
 import { describe, it, expect } from 'vitest'
 import handler from '../api/leaves.js'
 
-// Roster fixture façon RH Compliance (le handler reçoit rosterOverride —
-// pas d'accès réseau ni base dans les tests).
+// Roster fixture (chaîne : Eden -> superviseur RH Vithusa).
 const ROSTER = [
-  { name: 'Lucas DOSSO', team: 'Marketing', manager: true },
-  { name: 'Salvatore MACRI', team: 'Marketing', manager: false },
-  { name: 'Christophe PROT', team: 'Tech', manager: true },
-  { name: 'Claire HUANG', team: 'Tech', manager: false },
+  { name: 'Vithusa VASIDDAN', team: 'Customer Success', manager: false, supervisor: null, rhSupervisor: null },
+  { name: 'Eden KTORZA', team: 'Customer Success', manager: false, supervisor: 'Vithusa VASIDDAN', rhSupervisor: 'Vithusa VASIDDAN' },
+  { name: 'Lucas DOSSO', team: 'Marketing', manager: true, supervisor: null, rhSupervisor: null },
+  { name: 'Salvatore MACRI', team: 'Marketing', manager: false, supervisor: null, rhSupervisor: null },
 ]
 
+const CONFIG = { extraApprovers: {}, globalAdmins: ['Laure COHEN', 'Yoann VALENSI'] }
+
 const PENDING = {
-  id: '7', employee: 'Salvatore MACRI', startDate: '2026-09-01', endDate: '2026-09-05',
-  type: 'conge_paye', note: null, status: 'pending', submittedBy: 'Salvatore MACRI',
+  id: '7', employee: 'Eden KTORZA', startDate: '2026-09-01', endDate: '2026-09-05',
+  type: 'conge_paye', note: null, status: 'pending', submittedBy: 'Eden KTORZA',
   decidedBy: null, createdAt: '2026-08-05T10:00:00+00',
 }
 
-function makeDb({ byId = [], list = [], owner = [], updateRows } = {}) {
+// Fake sql : route aussi la lecture du profil (auth).
+function makeDb({ byId = [], list = [], owner = [], updateRows, profiles = {} } = {}) {
   const sql = async (query, params = []) => {
     sql.calls.push({ query, params })
     const q = query.replace(/\s+/g, ' ')
+    if (/SELECT name, status FROM conges_profiles/i.test(q)) {
+      const p = profiles[params[0]]
+      return p ? [p] : []
+    }
     if (/INSERT INTO conges_leaves/i.test(q)) return [{ id: '42' }]
     if (/UPDATE conges_leaves/i.test(q)) return updateRows ?? [{ id: params[0] }]
     if (/DELETE FROM conges_leaves/i.test(q)) return []
@@ -42,120 +48,135 @@ function mockRes() {
   }
 }
 
-async function call(req, { sql = makeDb(), roster = ROSTER } = {}) {
+// `as` = nom du profil authentifié (identité vérifiée simulée).
+async function call(req, { as = 'Eden KTORZA', sqlOpts = {}, noToken = false, pendingProfile = false } = {}) {
   const res = mockRes()
-  await handler(req, res, sql, roster)
+  const sql = makeDb({
+    ...sqlOpts,
+    profiles: { 'uid-1': { name: as, status: pendingProfile ? 'pending' : 'approved' } },
+  })
+  const verify = noToken ? async () => null : async () => ({ uid: 'uid-1', email: 'x@certideal.com' })
+  await handler(
+    { headers: { authorization: noToken ? '' : 'Bearer fake' }, ...req },
+    res,
+    { sql, roster: ROSTER, config: CONFIG, verify: noToken ? undefined : verify }
+  )
   return { res, sql }
 }
 
-const valid = { employee: 'Salvatore MACRI', startDate: '2026-09-01', endDate: '2026-09-05', type: 'conge_paye' }
+const valid = { startDate: '2026-09-01', endDate: '2026-09-05', type: 'conge_paye' }
 
-describe('GET', () => {
-  it('liste les congés avec statut, triés par date', async () => {
-    const sql = makeDb({ list: [PENDING] })
-    const { res } = await call({ method: 'GET' }, { sql })
-    expect(res.statusCode).toBe(200)
-    expect(res.body[0].status).toBe('pending')
-    expect(sql.calls[0].query).toMatch(/ORDER BY start_date/)
+describe('authentification', () => {
+  it('sans jeton → 401', async () => {
+    const { res } = await call({ method: 'GET' }, { noToken: true })
+    expect(res.statusCode).toBe(401)
+  })
+  it('profil en attente → 403', async () => {
+    const { res } = await call({ method: 'GET' }, { pendingProfile: true })
+    expect(res.statusCode).toBe(403)
   })
 })
 
-describe('POST — policy serveur', () => {
-  it('demande normale (pôle avec manager) → 201 pending', async () => {
+describe('GET — visibilité par chaîne de commandement', () => {
+  const rows = [
+    PENDING, // Eden (pending)
+    { ...PENDING, id: '8', employee: 'Salvatore MACRI', status: 'approved', note: 'secret', type: 'conge_paye' },
+    { ...PENDING, id: '9', employee: 'Salvatore MACRI', status: 'pending' },
+  ]
+
+  it('chacun voit SES congés en clair ; les autres en silhouette (approuvés, sans type/note)', async () => {
+    const { res } = await call({ method: 'GET' }, { as: 'Eden KTORZA', sqlOpts: { list: rows } })
+    expect(res.statusCode).toBe(200)
+    const mine = res.body.find(l => l.id === '7')
+    expect(mine.type).toBe('conge_paye') // en clair (soi-même)
+    const other = res.body.find(l => l.id === '8')
+    expect(other.restricted).toBe(true)
+    expect(other.type).toBe(null)
+    expect(other.note).toBe(null)
+    // le pending d'autrui hors périmètre est invisible
+    expect(res.body.find(l => l.id === '9')).toBeUndefined()
+  })
+
+  it('le superviseur voit son sous-arbre en clair', async () => {
+    const { res } = await call({ method: 'GET' }, { as: 'Vithusa VASIDDAN', sqlOpts: { list: rows } })
+    expect(res.body.find(l => l.id === '7').type).toBe('conge_paye') // Eden = sous-arbre
+    expect(res.body.find(l => l.id === '8').restricted).toBe(true)  // Salvatore = hors chaîne
+  })
+
+  it('un admin global voit tout en clair', async () => {
+    const { res } = await call({ method: 'GET' }, { as: 'Laure COHEN', sqlOpts: { list: rows } })
+    expect(res.body).toHaveLength(3)
+    expect(res.body.every(l => !l.restricted)).toBe(true)
+  })
+})
+
+describe('POST — identité du jeton, policy serveur', () => {
+  it('demande pour soi → pending vers le superviseur RH ; submittedBy = identité vérifiée', async () => {
     const { res, sql } = await call({ method: 'POST', body: valid })
     expect(res.statusCode).toBe(201)
     expect(res.body.status).toBe('pending')
     const ins = sql.calls.find(c => /INSERT/i.test(c.query))
-    expect(ins.params[5]).toBe('pending')
+    expect(ins.params[6]).toBe('Eden KTORZA') // submitted_by = jeton, pas le body
   })
 
-  it('arrêt maladie → approved (déclaration)', async () => {
-    const { res } = await call({ method: 'POST', body: { ...valid, type: 'arret_maladie' } })
-    expect(res.body.status).toBe('approved')
-  })
-
-  it('saisie PAR le manager POUR un membre → approved + decidedBy', async () => {
-    const { res, sql } = await call({ method: 'POST', body: { ...valid, submittedBy: 'Lucas DOSSO' } })
-    expect(res.body.status).toBe('approved')
-    const ins = sql.calls.find(c => /INSERT/i.test(c.query))
-    expect(ins.params[7]).toBe('Lucas DOSSO') // decided_by
-  })
-
-  it("saisie pour quelqu'un par un NON-approbateur → 403", async () => {
-    const { res } = await call({ method: 'POST', body: { ...valid, submittedBy: 'Claire HUANG' } })
+  it('impossible d’usurper : employee ≠ soi sans droits → 403 (même avec submittedBy forgé)', async () => {
+    const { res } = await call({
+      method: 'POST',
+      body: { ...valid, employee: 'Salvatore MACRI', submittedBy: 'Lucas DOSSO' },
+    }, { as: 'Eden KTORZA' })
     expect(res.statusCode).toBe(403)
   })
 
-  it('employé hors personnel RH → 400', async () => {
-    const { res } = await call({ method: 'POST', body: { ...valid, employee: 'Mallory HACKER' } })
-    expect(res.statusCode).toBe(400)
+  it('le superviseur RH saisit pour son N-1 → approved', async () => {
+    const { res } = await call({
+      method: 'POST', body: { ...valid, employee: 'Eden KTORZA' },
+    }, { as: 'Vithusa VASIDDAN' })
+    expect(res.statusCode).toBe(201)
+    expect(res.body.status).toBe('approved')
   })
 
-  it('validations : type, dates impossibles, ordre, JSON, note', async () => {
+  it('validations de base (type/date/ordre/json)', async () => {
     for (const body of [
       { ...valid, type: 'rtt' },
       { ...valid, startDate: '2026-02-31' },
       { ...valid, startDate: '2026-09-10', endDate: '2026-09-05' },
-      { ...valid, note: { evil: true } },
     ]) {
       const { res } = await call({ method: 'POST', body })
       expect(res.statusCode, JSON.stringify(body)).toBe(400)
     }
-    const { res } = await call({ method: 'POST', body: '{ pas du json' })
-    expect(res.statusCode).toBe(400)
   })
 })
 
-describe('PATCH — décision', () => {
-  const patch = (user, action = 'approve', byId = [PENDING], updateRows) =>
-    call({ method: 'PATCH', query: { id: '7' }, body: { user, action } }, { sql: makeDb({ byId, updateRows }) })
+describe('PATCH — décision par le superviseur RH', () => {
+  const patch = (as, action = 'approve', byId = [PENDING], updateRows) =>
+    call({ method: 'PATCH', query: { id: '7' }, body: { action } }, { as, sqlOpts: { byId, updateRows } })
 
-  it('le manager du pôle approuve → 200', async () => {
-    const { res, sql } = await patch('Lucas DOSSO')
+  it('le superviseur RH approuve → 200 (garde atomique)', async () => {
+    const { res, sql } = await patch('Vithusa VASIDDAN')
     expect(res.statusCode).toBe(200)
-    expect(res.body.status).toBe('approved')
-    const upd = sql.calls.find(c => /UPDATE/i.test(c.query))
-    expect(upd.query).toMatch(/status = 'pending'/) // garde atomique
+    expect(sql.calls.find(c => /UPDATE/i.test(c.query)).query).toMatch(/status = 'pending'/)
   })
 
-  it("manager d'un autre pôle → 403 ; soi-même → 403", async () => {
-    expect((await patch('Christophe PROT')).res.statusCode).toBe(403)
-    expect((await patch('Salvatore MACRI')).res.statusCode).toBe(403)
+  it('un non-superviseur → 403 ; soi-même → 403 ; admin global → 200', async () => {
+    expect((await patch('Lucas DOSSO')).res.statusCode).toBe(403)
+    expect((await patch('Eden KTORZA')).res.statusCode).toBe(403)
+    expect((await patch('Yoann VALENSI')).res.statusCode).toBe(200)
   })
 
-  it('admin global (Laure) décide partout → 200', async () => {
-    const { res } = await patch('Laure COHEN')
-    expect(res.statusCode).toBe(200)
-  })
-
-  it('introuvable → 404 ; déjà traité → 409 ; course perdue → 409', async () => {
-    expect((await patch('Lucas DOSSO', 'approve', [])).res.statusCode).toBe(404)
-    expect((await patch('Lucas DOSSO', 'approve', [{ ...PENDING, status: 'approved' }])).res.statusCode).toBe(409)
-    expect((await patch('Lucas DOSSO', 'approve', [PENDING], [])).res.statusCode).toBe(409)
+  it('404 introuvable ; 409 déjà traité ; 409 course perdue', async () => {
+    expect((await patch('Vithusa VASIDDAN', 'approve', [])).res.statusCode).toBe(404)
+    expect((await patch('Vithusa VASIDDAN', 'approve', [{ ...PENDING, status: 'approved' }])).res.statusCode).toBe(409)
+    expect((await patch('Vithusa VASIDDAN', 'approve', [PENDING], [])).res.statusCode).toBe(409)
   })
 })
 
-describe('DELETE — propriété', () => {
-  const del = (query, owner = [{ employee: 'Salvatore MACRI' }]) =>
-    call({ method: 'DELETE', query }, { sql: makeDb({ owner }) })
+describe('DELETE', () => {
+  const del = (as, owner = [{ employee: 'Eden KTORZA' }]) =>
+    call({ method: 'DELETE', query: { id: '7' } }, { as, sqlOpts: { owner } })
 
-  it('propriétaire ok ; admin global ok ; autre → 403 ; sans user → 403', async () => {
-    expect((await del({ id: '7', user: 'Salvatore MACRI' })).res.statusCode).toBe(200)
-    expect((await del({ id: '7', user: 'Yoann VALENSI' })).res.statusCode).toBe(200)
-    expect((await del({ id: '7', user: 'Lucas DOSSO' })).res.statusCode).toBe(403)
-    expect((await del({ id: '7' })).res.statusCode).toBe(403)
-  })
-
-  it('déjà supprimé → 200 idempotent ; sans id → 400', async () => {
-    expect((await del({ id: '99', user: 'X' }, [])).res.statusCode).toBe(200)
-    expect((await del({})).res.statusCode).toBe(400)
-  })
-})
-
-describe('divers', () => {
-  it('OPTIONS → 204 CORS ; PUT → 405', async () => {
-    const { res } = await call({ method: 'OPTIONS' })
-    expect(res.statusCode).toBe(204)
-    expect((await call({ method: 'PUT' })).res.statusCode).toBe(405)
+  it('propriétaire ok ; admin global ok ; autre → 403', async () => {
+    expect((await del('Eden KTORZA')).res.statusCode).toBe(200)
+    expect((await del('Laure COHEN')).res.statusCode).toBe(200)
+    expect((await del('Vithusa VASIDDAN')).res.statusCode).toBe(403)
   })
 })

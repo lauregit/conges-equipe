@@ -75,7 +75,7 @@ export default function Presence({ employees, leaves, currentUser, visibleTeams 
                   </span>
                   <span className="presence-status">
                     {s.kind === 'present' && 'Présent'}
-                    {s.kind === 'absent' && `Absent — ${TYPE_META[s.leave.type]?.label || s.leave.type}`}
+                    {s.kind === 'absent' && (s.leave.type ? `Absent — ${TYPE_META[s.leave.type]?.label || s.leave.type}` : 'Absent')}
                     {s.kind === 'pending' && `Demande en attente (${TYPE_META[s.leave.type]?.label || s.leave.type})`}
                   </span>
                 </div>
