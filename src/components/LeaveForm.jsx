@@ -6,7 +6,7 @@ import { initialStatus } from '../leavePolicy'
 import { sameName } from '../utils/names'
 const LEAVE_TYPES = TYPE_KEYS.map(key => ({ key, label: `${TYPE_META[key].emoji} ${TYPE_META[key].label}` }))
 
-export default function LeaveForm({ onSubmit, onCancel, currentUser, isSuperAdmin, visibleEmployees = [], myLeaves = [], allLeaves = [], roster = [] }) {
+export default function LeaveForm({ onSubmit, onCancel, currentUser, isSuperAdmin, visibleEmployees = [], myLeaves = [], allLeaves = [], roster = [], config }) {
   const today = format(new Date(), 'yyyy-MM-dd')
   // Super admins can fill in for anyone
   const [actingFor, setActingFor] = useState(currentUser)
@@ -30,7 +30,8 @@ export default function LeaveForm({ onSubmit, onCancel, currentUser, isSuperAdmi
   // initialStatus au moment de l'enregistrement.
   const willBePending = initialStatus(
     { type, employee: actingFor, submittedBy: currentUser },
-    roster
+    roster,
+    config
   ) === 'pending'
 
   async function handleSubmit(e) {

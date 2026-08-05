@@ -2,8 +2,8 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { signOut } from 'firebase/auth'
 import { auth } from './firebase'
 import { useAuth } from './hooks/useAuth'
-import { fetchLeaves, fetchEmployees, addLeave, decideLeave, deleteLeave } from './api'
-import { canDecide, managedTeams } from './leavePolicy'
+import { fetchLeaves, fetchRosterBundle, addLeave, decideLeave, deleteLeave } from './api'
+import { canDecide, canSee, subtreeOf, isApprover, isGlobalAdmin } from './leavePolicy'
 import { sameName } from './utils/names'
 import Calendar from './components/Calendar'
 import AuthScreen from './components/AuthScreen'
@@ -11,12 +11,14 @@ import LeaveForm from './components/LeaveForm'
 import Approvals from './components/Approvals'
 import Presence from './components/Presence'
 import TeamSettings from './components/TeamSettings'
+import AdminPanel from './components/AdminPanel'
 import './App.css'
 
 export default function App() {
-  const { firebaseUser, profile, isGlobalAdmin, loading: authLoading } = useAuth()
+  const { firebaseUser, profile, loading: authLoading } = useAuth()
   const [leaves, setLeaves] = useState([])
   const [employees, setEmployees] = useState([])
+  const [config, setConfig] = useState({ globalAdmins: [], extraApprovers: {} })
   const [view, setView] = useState('calendar')
   const [notification, setNotification] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -24,12 +26,14 @@ export default function App() {
   const notifTimer = useRef(null)
 
   const user = profile?.name || null
+  const profileApproved = profile?.status === 'approved'
 
   const loadAll = useCallback(async () => {
     try {
-      const [l, e] = await Promise.all([fetchLeaves(), fetchEmployees()])
+      const [l, bundle] = await Promise.all([fetchLeaves(), fetchRosterBundle()])
       setLeaves(l)
-      setEmployees(e)
+      setEmployees(bundle.employees)
+      setConfig(bundle.config)
       setLoadError(null)
     } catch (err) {
       console.error(err)
@@ -40,7 +44,7 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    if (!user) return
+    if (!user || !profileApproved) return
     loadAll()
     const onFocus = () => { if (document.visibilityState === 'visible') loadAll() }
     window.addEventListener('focus', onFocus)
@@ -49,36 +53,40 @@ export default function App() {
       window.removeEventListener('focus', onFocus)
       document.removeEventListener('visibilitychange', onFocus)
     }
-  }, [loadAll, user])
+  }, [loadAll, user, profileApproved])
 
   const me = employees.find(e => sameName(e.name, user)) || null
+  const amGlobalAdmin = user ? isGlobalAdmin(user, config) : false
+  const canApprove = user ? isApprover(user, employees, config) : false
   const myLeaves = leaves.filter(l => sameName(l.employee, user))
 
-  // Pôles gérés (organigramme RH + EXTRA_APPROVERS) : '*' = admin global.
-  const myManagedTeams = user ? managedTeams(user, employees) : []
-  const canApprove = myManagedTeams === '*' || myManagedTeams.length > 0
-
-  // Équipes visibles : admin global → toutes ; approbateur → ses pôles gérés
-  // (+ le sien) ; employé → le sien.
-  const visibleTeams = myManagedTeams === '*'
-    ? [...new Set(employees.map(e => e.team))]
-    : [...new Set([...myManagedTeams, me?.team].filter(Boolean))]
-  const visibleEmployees = employees.filter(e => visibleTeams.includes(e.team))
+  // Périmètre : soi-même + son SOUS-ARBRE (chaîne de commandement).
+  // Les admins globaux voient tout.
+  const mySubtree = user ? subtreeOf(user, employees, config) : []
+  const visibleEmployees = employees.filter(e =>
+    sameName(e.name, user) || mySubtree.some(n => sameName(n, e.name))
+  )
   const visibleEmployeeNames = visibleEmployees.map(e => e.name)
 
-  // Congés visibles : les approbateurs voient leurs équipes ; un employé voit
-  // les siens (choix de confidentialité de Laure conservé).
-  const visibleLeaves = canApprove
-    ? leaves.filter(l => visibleEmployeeNames.some(n => sameName(n, l.employee)))
-    : myLeaves
+  // Congés en clair de mon périmètre (le serveur ne fournit de toute façon
+  // que des silhouettes pour le reste).
+  const visibleLeaves = leaves.filter(l =>
+    canSee(user, l.employee, employees, config)
+  )
 
-  // Demandes que JE peux décider (badge + onglet Approbations).
-  const decidable = leaves.filter(l => l.status === 'pending' && canDecide(user, l.employee, employees))
+  // Demandes que JE peux décider (superviseur RH désigné, ou admin global).
+  const decidable = leaves.filter(l =>
+    l.status === 'pending' && canDecide(user, l.employee, employees, config)
+  )
   const pendingCount = decidable.length
+
+  // Historique des demandes de mon sous-arbre (vue manager).
+  const subtreeLeaves = leaves.filter(l =>
+    !l.restricted && mySubtree.some(n => sameName(n, l.employee))
+  )
 
   async function handleLogout() {
     await signOut(auth)
-    // Nettoie aussi la session Certilogia (SSO interne) le cas échéant.
     localStorage.removeItem('certilogia_token')
     localStorage.removeItem('certilogia_user')
     setView('calendar')
@@ -87,18 +95,15 @@ export default function App() {
   }
 
   function handleProfileSaved() {
-    // onAuthStateChanged will re-fire and reload the profile automatically
     window.location.reload()
   }
 
-  // Throws on failure so LeaveForm can keep the form open and re-enable submit.
   async function handleSubmitLeave(leave) {
     try {
-      const targetEmployee = leave.employee || user
-      const created = await addLeave({ ...leave, employee: targetEmployee, submittedBy: user })
+      const created = await addLeave({ ...leave, employee: leave.employee || user })
       await loadAll()
       showNotification(
-        created.status === 'pending' ? 'Demande envoyée pour approbation ✓'
+        created.status === 'pending' ? 'Demande envoyée à votre superviseur ✓'
           : created.type === 'arret_maladie' ? 'Absence déclarée ✓'
           : 'Congé enregistré ✓'
       )
@@ -121,7 +126,7 @@ export default function App() {
 
   async function handleDeleteLeave(id) {
     try {
-      await deleteLeave(id, user)
+      await deleteLeave(id)
       await loadAll()
       showNotification('Congé supprimé')
     } catch (err) {
@@ -135,22 +140,35 @@ export default function App() {
     notifTimer.current = setTimeout(() => setNotification(null), type === 'error' ? 5000 : 3000)
   }
 
-  // Clear a pending notification timer on unmount.
   useEffect(() => () => { if (notifTimer.current) clearTimeout(notifTimer.current) }, [])
 
-  // Still resolving Firebase auth state
   if (authLoading) return <div className="loading-state" style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>Chargement…</div>
 
-  // Not logged in, or logged in but no profile yet
   if (!firebaseUser || !profile) return (
     <AuthScreen firebaseUser={firebaseUser || null} onProfileSaved={handleProfileSaved} />
+  )
+
+  // Liaison en attente de validation par un admin (email ≠ email RH).
+  if (!profileApproved) return (
+    <div className="login-screen">
+      <div className="login-card">
+        <div className="login-logo">⏳</div>
+        <h1>Compte en attente</h1>
+        <p>
+          Votre compte est associé à <strong>{profile.name}</strong>, mais votre email de
+          connexion ne correspond pas à l'email RH — un admin doit valider la liaison.
+        </p>
+        <button className="btn-logout" style={{ marginTop: 16 }} onClick={handleLogout}>Se déconnecter</button>
+      </div>
+    </div>
   )
 
   const TABS = [
     { key: 'calendar', label: '📅 Calendrier' },
     { key: 'presence', label: '👥 Présence' },
     ...(canApprove ? [{ key: 'approvals', label: `✅ Approbations${pendingCount ? ` (${pendingCount})` : ''}` }] : []),
-    { key: 'team', label: '⚙️ Équipes' },
+    { key: 'team', label: '🏢 Équipes' },
+    ...(amGlobalAdmin ? [{ key: 'admin', label: '⚙️ Admin' }] : []),
   ]
 
   return (
@@ -175,7 +193,7 @@ export default function App() {
           ))}
         </nav>
         <div className="header-right">
-          <span className="user-badge">{user}{isGlobalAdmin ? ' 👑' : canApprove ? ' ⭐' : ''}</span>
+          <span className="user-badge">{user}{amGlobalAdmin ? ' 👑' : canApprove ? ' ⭐' : ''}</span>
           <button className="btn-primary" onClick={() => setView('request')}>
             + Poser un congé
           </button>
@@ -201,10 +219,10 @@ export default function App() {
         <>
           {view === 'calendar' && (
             <Calendar
-              leaves={visibleLeaves}
-              employees={canApprove ? visibleEmployees : [me].filter(Boolean)}
+              leaves={amGlobalAdmin ? leaves : visibleLeaves}
+              employees={amGlobalAdmin ? employees : visibleEmployees}
               currentUser={user}
-              isAdmin={canApprove}
+              isAdmin={canApprove || amGlobalAdmin}
               onDelete={handleDeleteLeave}
             />
           )}
@@ -213,33 +231,39 @@ export default function App() {
               employees={employees}
               leaves={leaves}
               currentUser={user}
-              visibleTeams={visibleTeams}
-              showFilter={isGlobalAdmin || visibleTeams.length > 1}
+              visibleTeams={[...new Set((amGlobalAdmin ? employees : visibleEmployees.concat(me ? [me] : [])).map(e => e.team))]}
+              showFilter={amGlobalAdmin}
             />
           )}
           {view === 'approvals' && canApprove && (
             <Approvals
               employees={employees}
               pending={decidable}
+              history={subtreeLeaves.filter(l => l.status !== 'pending')}
               onDecide={handleDecide}
             />
           )}
           {view === 'team' && (
             <TeamSettings
               employees={employees}
+              config={config}
               currentUser={user}
-              isGlobalAdmin={isGlobalAdmin}
+              isGlobalAdmin={amGlobalAdmin}
               onImported={loadAll}
             />
+          )}
+          {view === 'admin' && amGlobalAdmin && (
+            <AdminPanel employees={employees} onChanged={loadAll} />
           )}
           {view === 'request' && (
             <LeaveForm
               currentUser={user}
-              isSuperAdmin={canApprove}
+              isSuperAdmin={canApprove || amGlobalAdmin}
               visibleEmployees={visibleEmployeeNames}
               myLeaves={myLeaves}
               allLeaves={leaves}
               roster={employees}
+              config={config}
               onSubmit={handleSubmitLeave}
               onCancel={() => setView('calendar')}
             />

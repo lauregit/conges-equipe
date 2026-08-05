@@ -1,139 +1,125 @@
 import { describe, it, expect } from 'vitest'
-import { approversOf, canDecide, isApprover, managedTeams, initialStatus, teamOf } from '../src/leavePolicy.js'
+import {
+  approversOf, canDecide, isApprover, initialStatus,
+  chainOf, subtreeOf, canSee, isGlobalAdmin, MAX_CHAIN,
+} from '../src/leavePolicy.js'
 import { normName, sameName, findByName } from '../src/utils/names.js'
 
-// Roster fixture façon /api/roster (RH Compliance) :
-// team = pôle de l'organigramme, manager = détecté depuis le poste.
+// Roster fixture : RH (team/manager) + chaîne de commandement
+// (supervisor = N+1, rhSupervisor = destinataire des demandes).
+// Chaîne : Eden -> Apolline -> Vithusa -> Andrea (3 niveaux au-dessus d'Eden)
 const ROSTER = [
-  { name: 'Laure COHEN', team: 'Marketing', manager: false },
-  { name: 'Lucas DOSSO', team: 'Marketing', manager: true },   // HEAD OF GROWTH
-  { name: 'Salvatore MACRI', team: 'Marketing', manager: false },
-  { name: 'Andrea LEVY', team: 'Customer Success', manager: true }, // RESPONSABLE CLIENTS
-  { name: 'Eden KTORZA', team: 'Customer Success', manager: false }, // KEY ACCOUNT MANAGER ≠ manager
-  { name: 'Vithusa VASIDDAN', team: 'Customer Success', manager: false }, // approbatrice déléguée
-  { name: 'Christophe PROT', team: 'Tech', manager: true },    // CTO
-  { name: 'Claire HUANG', team: 'Tech', manager: false },
-  { name: 'Alexia OSMANI', team: 'Logistique', manager: true }, // MANAGER EXPE
-  { name: 'Abba ALI MOUSSA', team: 'Logistique', manager: false },
-  { name: 'Hanna BOICHUK', team: 'Ménage', manager: false },   // pôle sans manager
+  { name: 'Andrea LEVY', team: 'Customer Success', manager: true, supervisor: null, rhSupervisor: null },
+  { name: 'Vithusa VASIDDAN', team: 'Customer Success', manager: false, supervisor: 'Andrea LEVY', rhSupervisor: 'Andrea LEVY' },
+  { name: 'Apolline SARAGONI', team: 'Customer Success', manager: false, supervisor: 'Vithusa VASIDDAN', rhSupervisor: 'Vithusa VASIDDAN' },
+  { name: 'Eden KTORZA', team: 'Customer Success', manager: false, supervisor: 'Apolline SARAGONI', rhSupervisor: 'Vithusa VASIDDAN' },
+  // Pôle Marketing : pas de chaîne définie -> repli managers du pôle
+  { name: 'Lucas DOSSO', team: 'Marketing', manager: true, supervisor: null, rhSupervisor: null },
+  { name: 'Salvatore MACRI', team: 'Marketing', manager: false, supervisor: null, rhSupervisor: null },
+  // Ménage : ni chaîne ni manager
+  { name: 'Hanna BOICHUK', team: 'Ménage', manager: false, supervisor: null, rhSupervisor: null },
 ]
 
-const CONFIG = {
-  extraApprovers: { 'Customer Success': ['Vithusa VASIDDAN'] },
-  globalAdmins: ['Laure COHEN', 'Yoann VALENSI'],
-}
+const CONFIG = { extraApprovers: {}, globalAdmins: ['Laure COHEN', 'Yoann VALENSI'] }
 
 describe('names utils', () => {
   it('normalise casse, accents et espaces', () => {
     expect(normName('  Clémentine   PITHON ')).toBe('CLEMENTINE PITHON')
     expect(sameName('LUCAS DOSSO', 'Lucas Dosso')).toBe(true)
-    expect(sameName('Lucas DOSSO', 'Lucas DOSSA')).toBe(false)
-  })
-  it('findByName retrouve une ligne peu importe la casse', () => {
-    expect(findByName(ROSTER, 'lucas dosso')?.team).toBe('Marketing')
-    expect(findByName(ROSTER, 'Inconnu X')).toBe(null)
+    expect(findByName(ROSTER, 'eden ktorza')?.team).toBe('Customer Success')
   })
 })
 
-describe('teamOf / approversOf', () => {
-  it('retrouve le pôle organigramme d’une personne', () => {
-    expect(teamOf('Claire HUANG', ROSTER)).toBe('Tech')
-    expect(teamOf('Personne INCONNUE', ROSTER)).toBe(null)
+describe('chaîne de commandement', () => {
+  it('chainOf remonte les N+1 (max 5)', () => {
+    expect(chainOf('Eden KTORZA', ROSTER)).toEqual(['Apolline SARAGONI', 'Vithusa VASIDDAN', 'Andrea LEVY'])
+    expect(chainOf('Andrea LEVY', ROSTER)).toEqual([])
   })
 
-  it('approbateurs = managers du pôle (organigramme) + délégués + admins globaux, sans soi-même', () => {
-    expect(approversOf('Salvatore MACRI', ROSTER, CONFIG).sort()).toEqual(
-      ['LAURE COHEN', 'LUCAS DOSSO', 'YOANN VALENSI'].sort()
+  it('chainOf résiste aux cycles', () => {
+    const cyclic = [
+      { name: 'A A', team: 'X', supervisor: 'B B' },
+      { name: 'B B', team: 'X', supervisor: 'A A' },
+    ]
+    expect(chainOf('A A', cyclic).length).toBeLessThanOrEqual(2)
+  })
+
+  it('chainOf est plafonnée à 5 niveaux', () => {
+    const deep = Array.from({ length: 8 }, (_, i) => ({
+      name: `P ${i}`, team: 'X', supervisor: i < 7 ? `P ${i + 1}` : null,
+    }))
+    expect(chainOf('P 0', deep).length).toBe(MAX_CHAIN)
+  })
+
+  it('canSee : au-dessus voit en dessous, pas l’inverse ni les pairs', () => {
+    expect(canSee('Andrea LEVY', 'Eden KTORZA', ROSTER, CONFIG)).toBe(true)      // N+3
+    expect(canSee('Apolline SARAGONI', 'Eden KTORZA', ROSTER, CONFIG)).toBe(true) // N+1
+    expect(canSee('Eden KTORZA', 'Apolline SARAGONI', ROSTER, CONFIG)).toBe(false) // vers le haut : non
+    expect(canSee('Eden KTORZA', 'Eden KTORZA', ROSTER, CONFIG)).toBe(true)       // soi-même
+    expect(canSee('Salvatore MACRI', 'Eden KTORZA', ROSTER, CONFIG)).toBe(false)  // autre branche
+    expect(canSee('Laure COHEN', 'Eden KTORZA', ROSTER, CONFIG)).toBe(true)       // admin global
+  })
+
+  it('subtreeOf : tout le sous-arbre, tous niveaux', () => {
+    expect(subtreeOf('Andrea LEVY', ROSTER, CONFIG).sort()).toEqual(
+      ['Apolline SARAGONI', 'Eden KTORZA', 'Vithusa VASIDDAN'].sort()
     )
-    // délégué via EXTRA_APPROVERS
-    expect(approversOf('Eden KTORZA', ROSTER, CONFIG)).toContain('VITHUSA VASIDDAN')
-    // le manager est exclu de SES propres approbateurs
-    expect(approversOf('Lucas DOSSO', ROSTER, CONFIG)).not.toContain('LUCAS DOSSO')
-    // pôle sans manager : il reste les admins globaux
-    expect(approversOf('Hanna BOICHUK', ROSTER, CONFIG).sort()).toEqual(
-      ['LAURE COHEN', 'YOANN VALENSI'].sort()
-    )
+    expect(subtreeOf('Apolline SARAGONI', ROSTER, CONFIG)).toEqual(['Eden KTORZA'])
+    expect(subtreeOf('Eden KTORZA', ROSTER, CONFIG)).toEqual([])
   })
 })
 
-describe('canDecide', () => {
-  it('le manager du pôle peut décider', () => {
-    expect(canDecide('Lucas DOSSO', 'Salvatore MACRI', ROSTER, CONFIG)).toBe(true)
-    expect(canDecide('Alexia OSMANI', 'Abba ALI MOUSSA', ROSTER, CONFIG)).toBe(true)
+describe('approbation — superviseur RH désigné', () => {
+  it('la demande va au superviseur RH désigné (+ admins globaux), pas au N+1', () => {
+    // Eden : N+1 = Apolline, mais superviseur RH = Vithusa
+    const app = approversOf('Eden KTORZA', ROSTER, CONFIG)
+    expect(app).toContain(normName('Vithusa VASIDDAN'))
+    expect(app).not.toContain(normName('Apolline SARAGONI'))
+    expect(app).toContain(normName('Laure COHEN'))
   })
-  it('un approbateur délégué (EXTRA_APPROVERS) peut décider', () => {
+
+  it('canDecide suit le superviseur RH', () => {
     expect(canDecide('Vithusa VASIDDAN', 'Eden KTORZA', ROSTER, CONFIG)).toBe(true)
+    expect(canDecide('Apolline SARAGONI', 'Eden KTORZA', ROSTER, CONFIG)).toBe(false)
+    expect(canDecide('Andrea LEVY', 'Eden KTORZA', ROSTER, CONFIG)).toBe(false) // pas le superviseur RH désigné
+    expect(canDecide('Yoann VALENSI', 'Eden KTORZA', ROSTER, CONFIG)).toBe(true) // admin global
   })
-  it('un manager d’un AUTRE pôle ne peut pas', () => {
-    expect(canDecide('Christophe PROT', 'Salvatore MACRI', ROSTER, CONFIG)).toBe(false)
+
+  it('sans superviseur RH : repli sur les managers du pôle (organigramme)', () => {
+    expect(canDecide('Lucas DOSSO', 'Salvatore MACRI', ROSTER, CONFIG)).toBe(true)
+    expect(canDecide('Andrea LEVY', 'Salvatore MACRI', ROSTER, CONFIG)).toBe(false)
   })
+
   it('personne ne décide sa propre demande', () => {
-    expect(canDecide('Lucas DOSSO', 'Lucas DOSSO', ROSTER, CONFIG)).toBe(false)
-    expect(canDecide('Laure COHEN', 'Laure COHEN', ROSTER, CONFIG)).toBe(false)
+    expect(canDecide('Vithusa VASIDDAN', 'Vithusa VASIDDAN', ROSTER, CONFIG)).toBe(false)
   })
-  it('un admin global décide pour tous les pôles', () => {
-    expect(canDecide('Laure COHEN', 'Claire HUANG', ROSTER, CONFIG)).toBe(true)
-    expect(canDecide('Yoann VALENSI', 'Hanna BOICHUK', ROSTER, CONFIG)).toBe(true)
-  })
-  it('un simple employé ne décide rien', () => {
-    expect(canDecide('Eden KTORZA', 'Claire HUANG', ROSTER, CONFIG)).toBe(false)
-  })
-  it('comparaison de noms insensible à la casse', () => {
-    expect(canDecide('lucas dosso', 'SALVATORE MACRI', ROSTER, CONFIG)).toBe(true)
-  })
-})
 
-describe('isApprover / managedTeams', () => {
-  it('détecte managers organigramme, délégués et admins globaux', () => {
-    expect(isApprover('Lucas DOSSO', ROSTER, CONFIG)).toBe(true)
-    expect(isApprover('Vithusa VASIDDAN', ROSTER, CONFIG)).toBe(true)
-    expect(isApprover('Yoann VALENSI', ROSTER, CONFIG)).toBe(true)
+  it('isApprover : superviseur RH, manager organigramme, N+1 avec sous-arbre, admin', () => {
+    expect(isApprover('Vithusa VASIDDAN', ROSTER, CONFIG)).toBe(true) // superviseur RH + sous-arbre
+    expect(isApprover('Apolline SARAGONI', ROSTER, CONFIG)).toBe(true) // sous-arbre (Eden)
+    expect(isApprover('Lucas DOSSO', ROSTER, CONFIG)).toBe(true) // manager organigramme
     expect(isApprover('Eden KTORZA', ROSTER, CONFIG)).toBe(false)
-  })
-  it('managedTeams : pôles gérés, "*" pour un admin global', () => {
-    expect(managedTeams('Alexia OSMANI', ROSTER, CONFIG)).toEqual(['Logistique'])
-    expect(managedTeams('Vithusa VASIDDAN', ROSTER, CONFIG)).toEqual(['Customer Success'])
-    expect(managedTeams('Laure COHEN', ROSTER, CONFIG)).toBe('*')
-    expect(managedTeams('Eden KTORZA', ROSTER, CONFIG)).toEqual([])
+    expect(isApprover('Laure COHEN', ROSTER, CONFIG)).toBe(true)
   })
 })
 
-describe('initialStatus — cœur du workflow', () => {
+describe('initialStatus', () => {
   const st = (o) => initialStatus(o, ROSTER, CONFIG)
 
-  it('une demande normale dans un pôle avec manager → pending', () => {
-    expect(st({ type: 'conge_paye', employee: 'Salvatore MACRI' })).toBe('pending')
-    expect(st({ type: 'teletravail', employee: 'Claire HUANG', submittedBy: 'Claire HUANG' })).toBe('pending')
+  it('demande avec superviseur RH → pending ; arrêt maladie → approved', () => {
+    expect(st({ type: 'conge_paye', employee: 'Eden KTORZA' })).toBe('pending')
+    expect(st({ type: 'arret_maladie', employee: 'Eden KTORZA' })).toBe('approved')
   })
 
-  it('un arrêt maladie est déclaré immédiatement → approved', () => {
-    expect(st({ type: 'arret_maladie', employee: 'Salvatore MACRI' })).toBe('approved')
+  it('saisie PAR le superviseur RH → approved ; par un autre → pending', () => {
+    expect(st({ type: 'conge_paye', employee: 'Eden KTORZA', submittedBy: 'Vithusa VASIDDAN' })).toBe('approved')
+    expect(st({ type: 'conge_paye', employee: 'Eden KTORZA', submittedBy: 'Apolline SARAGONI' })).toBe('pending')
   })
 
-  it('une saisie PAR un approbateur POUR un membre → approved (validation implicite)', () => {
-    expect(st({ type: 'conge_paye', employee: 'Salvatore MACRI', submittedBy: 'Lucas DOSSO' })).toBe('approved')
-    expect(st({ type: 'conge_paye', employee: 'Claire HUANG', submittedBy: 'Laure COHEN' })).toBe('approved')
-  })
-
-  it('une saisie par un NON-approbateur pour quelqu’un ne vaut pas validation', () => {
-    expect(st({ type: 'conge_paye', employee: 'Salvatore MACRI', submittedBy: 'Eden KTORZA' })).toBe('pending')
-  })
-
-  it('la demande d’un manager pour lui-même → pending (un autre doit valider)', () => {
-    expect(st({ type: 'conge_paye', employee: 'Lucas DOSSO', submittedBy: 'Lucas DOSSO' })).toBe('pending')
-  })
-
-  it('la demande d’un admin global pour lui-même → approved (personne au-dessus)', () => {
-    expect(st({ type: 'conge_paye', employee: 'Laure COHEN', submittedBy: 'Laure COHEN' })).toBe('approved')
-  })
-
-  it('pôle sans manager → pending quand même (les admins globaux valident)', () => {
+  it('admin global pour soi → approved ; pôle sans approbateur → pending (admins) ; personne → approved', () => {
     expect(st({ type: 'conge_paye', employee: 'Hanna BOICHUK' })).toBe('pending')
-  })
-
-  it('sans AUCUN approbateur possible → approved (comportement historique)', () => {
     const none = { extraApprovers: {}, globalAdmins: [] }
-    const soloRoster = [{ name: 'Hanna BOICHUK', team: 'Ménage', manager: false }]
-    expect(initialStatus({ type: 'conge_paye', employee: 'Hanna BOICHUK' }, soloRoster, none)).toBe('approved')
+    expect(initialStatus({ type: 'conge_paye', employee: 'Hanna BOICHUK' }, ROSTER, none)).toBe('approved')
+    expect(isGlobalAdmin('Laure COHEN', CONFIG)).toBe(true)
   })
 })

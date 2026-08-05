@@ -1,5 +1,4 @@
 import { useState } from 'react'
-import { EXTRA_APPROVERS, GLOBAL_SUPER_ADMINS } from '../employees'
 import { sameName } from '../utils/names'
 import { importFirestoreLeaves } from '../api'
 
@@ -7,7 +6,9 @@ import { importFirestoreLeaves } from '../api'
 // Le personnel et les managers se gèrent dans RH Compliance
 // (https://rh-compliance.vercel.app) ; les approbateurs supplémentaires
 // dans src/employees.js (config déployée avec l'app).
-export default function TeamSettings({ employees, currentUser, isGlobalAdmin = false, onImported }) {
+export default function TeamSettings({ employees, config = {}, currentUser, isGlobalAdmin = false, onImported }) {
+  const EXTRA_APPROVERS = config.extraApprovers || {}
+  const GLOBAL_SUPER_ADMINS = config.globalAdmins || []
   const teams = [...new Set(employees.map(e => e.team))].sort()
   const [importState, setImportState] = useState(null) // null | 'running' | string résultat
 

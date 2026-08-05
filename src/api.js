@@ -1,18 +1,26 @@
-// Data layer : congés + profils dans Neon Postgres (fonctions /api/*),
-// personnel & organigramme depuis RH Compliance (/api/roster).
-// Firebase ne sert plus qu'à l'authentification (identité).
+// Data layer : congés + profils + hiérarchie dans Neon (fonctions /api/*),
+// personnel depuis RH Compliance. TOUTES les requêtes portent le jeton de
+// session Firebase — l'identité est vérifiée côté serveur.
 
-import { GLOBAL_SUPER_ADMINS } from './employees'
-import { isApprover } from './leavePolicy'
-import { normName } from './utils/names'
+import { auth } from './firebase'
+import { isApprover, isGlobalAdmin } from './leavePolicy'
 
-const LEAVES = '/api/leaves';
+async function authedFetch(url, options = {}) {
+  const user = auth.currentUser
+  const token = user ? await user.getIdToken() : null
+  return fetch(url, {
+    ...options,
+    headers: {
+      ...(options.headers || {}),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+  })
+}
 
-// Remonte le message d'erreur français du serveur, sinon un générique.
 async function readError(res, fallback) {
   try {
-    const body = await res.json();
-    if (body && body.error) return new Error(body.error);
+    const body = await res.json()
+    if (body && body.error) return new Error(body.error)
   } catch {
     // pas de corps JSON
   }
@@ -22,15 +30,13 @@ async function readError(res, fallback) {
 // ── Leaves ──────────────────────────────────────────────────────────────────
 
 export async function fetchLeaves() {
-  const res = await fetch(LEAVES)
+  const res = await authedFetch('/api/leaves')
   if (!res.ok) throw await readError(res, 'Impossible de charger les congés')
   return res.json()
 }
 
-// Le serveur applique la policy (statut initial, droits de saisie) — le
-// paramètre roster n'est plus nécessaire, conservé pour compatibilité d'appel.
 export async function addLeave(leave) {
-  const res = await fetch(LEAVES, {
+  const res = await authedFetch('/api/leaves', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(leave),
@@ -39,72 +45,83 @@ export async function addLeave(leave) {
   return res.json()
 }
 
-export async function decideLeave(id, user, action) {
-  const res = await fetch(`${LEAVES}?id=${encodeURIComponent(id)}`, {
+export async function decideLeave(id, _user, action) {
+  const res = await authedFetch(`/api/leaves?id=${encodeURIComponent(id)}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ user, action }),
+    body: JSON.stringify({ action }),
   })
   if (!res.ok) throw await readError(res, 'Impossible de traiter la demande')
   return res.json()
 }
 
-export async function deleteLeave(id, user) {
-  const res = await fetch(
-    `${LEAVES}?id=${encodeURIComponent(id)}&user=${encodeURIComponent(user || '')}`,
-    { method: 'DELETE' }
-  )
+export async function deleteLeave(id) {
+  const res = await authedFetch(`/api/leaves?id=${encodeURIComponent(id)}`, { method: 'DELETE' })
   if (!res.ok) throw await readError(res, 'Impossible de supprimer le congé')
   return res.json()
 }
 
-// ── Employees (RH Compliance) ────────────────────────────────────────────────
+// ── Personnel + config (RH Compliance + chaîne de commandement) ─────────────
 
-export async function fetchEmployees() {
-  const res = await fetch('/api/roster')
+export async function fetchRosterBundle() {
+  const res = await authedFetch('/api/roster')
   if (!res.ok) throw await readError(res, 'Impossible de charger le personnel RH')
-  const { items } = await res.json()
-  return items.map(e => ({
-    name: e.name,
-    email: e.email,
-    team: e.team,
+  const { items, config } = await res.json()
+  const employees = items.map(e => ({
+    ...e,
     teamKey: e.team,
-    position: e.position,
-    manager: !!e.manager,
-    type: e.type,
     active: true,
-    role: GLOBAL_SUPER_ADMINS.some(a => normName(a) === normName(e.name)) ? 'admin'
-      : isApprover(e.name, items) ? 'manager'
+    role: isGlobalAdmin(e.name, config) ? 'admin'
+      : isApprover(e.name, items, config) ? 'manager'
       : 'employee',
   }))
+  return { employees, config }
 }
 
-// ── Profils (uid Firebase -> nom) ────────────────────────────────────────────
+// ── Profil (compte connecté -> nom du personnel) ─────────────────────────────
 
-export async function fetchProfile(uid) {
-  const res = await fetch(`/api/profile?uid=${encodeURIComponent(uid)}`)
+export async function fetchProfile() {
+  const res = await authedFetch('/api/profile')
   if (res.status === 404) return null
   if (!res.ok) throw await readError(res, 'Impossible de charger le profil')
   return res.json()
 }
 
-export async function saveProfileApi(uid, name, email) {
-  const res = await fetch('/api/profile', {
+export async function saveProfileApi(name) {
+  const res = await authedFetch('/api/profile', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ uid, name, email }),
+    body: JSON.stringify({ name }),
   })
   if (!res.ok) throw await readError(res, "Impossible d'enregistrer le profil")
   return res.json()
 }
 
-// ── Import one-shot Firestore -> Neon (admin global) ─────────────────────────
+// ── Admin (admins globaux) ───────────────────────────────────────────────────
 
-export async function importFirestoreLeaves(actor, leaves) {
-  const res = await fetch('/api/import-firestore', {
+export async function fetchAdmin() {
+  const res = await authedFetch('/api/admin')
+  if (!res.ok) throw await readError(res, "Impossible de charger l'administration")
+  return res.json()
+}
+
+export async function adminAction(payload) {
+  const res = await authedFetch('/api/admin', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ actor, leaves }),
+    body: JSON.stringify(payload),
+  })
+  if (!res.ok) throw await readError(res, "Échec de l'action admin")
+  return res.json()
+}
+
+// ── Import one-shot Firestore -> Neon (admin global) ─────────────────────────
+
+export async function importFirestoreLeaves(_actor, leaves) {
+  const res = await authedFetch('/api/import-firestore', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ leaves }),
   })
   if (!res.ok) throw await readError(res, "Échec de l'import")
   return res.json()

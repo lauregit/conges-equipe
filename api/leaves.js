@@ -1,23 +1,21 @@
 import { neon } from '@neondatabase/serverless';
 import { LEAVE_TYPES } from '../src/constants.js';
-import { initialStatus, canDecide } from '../src/leavePolicy.js';
-import { GLOBAL_SUPER_ADMINS } from '../src/employees.js';
+import { initialStatus, canDecide, canSee, isGlobalAdmin } from '../src/leavePolicy.js';
 import { normName, findByName, sameName } from '../src/utils/names.js';
 import { loadRoster } from './_rhroster.js';
+import { requireProfile } from './_auth.js';
+import { loadConfig } from './_config.js';
 
-// Congés dans Neon Postgres (table conges_leaves) — la base de Yoann.
-// Le personnel/organigramme vient de RH Compliance (loadRoster) et sert à
-// APPLIQUER la policy côté serveur : statut initial, droits de décision.
-// Routes (toutes sur /api/leaves) :
-//   GET                          -> tous les congés
-//   POST  {employee, submittedBy, startDate, endDate, type, note}
-//         -> pending/approved selon la policy (organigramme)
-//   PATCH ?id=  {user, action:'approve'|'reject'}
-//         -> décision manager (UPDATE atomique, une seule décision gagne)
-//   DELETE ?id=&user=            -> propriétaire ou admin global
-//
-// Identité best-effort (nom fourni par le client, validé contre le roster) —
-// même modèle de confiance que le reste de l'app interne.
+// Congés dans Neon Postgres. SÉCURISÉ :
+// - chaque requête exige le jeton de session (identité vérifiée par
+//   signature — jamais tirée du corps de la requête)
+// - GET : chacun reçoit SES congés en clair + ceux de son SOUS-ARBRE
+//   (chaîne de commandement) ; pour les autres, seulement des lignes
+//   minimales approuvées (présence/calendrier, sans type ni note).
+//   Les admins globaux voient tout.
+// - POST : la demande part chez le superviseur RH désigné (policy serveur)
+// - PATCH : seul un approbateur désigné décide ; garde atomique
+// - DELETE : propriétaire ou admin global
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const MAX_NOTE = 200;
@@ -34,7 +32,6 @@ function getSql() {
   return _sql;
 }
 
-// Vraie date calendaire 'yyyy-MM-dd' (rejette p.ex. 2026-02-31).
 function isValidDate(s) {
   if (typeof s !== 'string' || !DATE_RE.test(s)) return false;
   const [y, m, d] = s.split('-').map(Number);
@@ -68,14 +65,24 @@ function parseBody(req, res) {
   return req.body || {};
 }
 
-const isGlobalAdmin = (name) =>
-  GLOBAL_SUPER_ADMINS.some(a => normName(a) === normName(name));
+// Fusion roster RH + chaîne de commandement (comme /api/roster).
+async function loadFullRoster(sql, overrides) {
+  const [items, hierarchy] = await Promise.all([
+    overrides.roster ? Promise.resolve(overrides.roster) : loadRoster(),
+    overrides.roster ? Promise.resolve([]) : sql(`SELECT employee, supervisor, rh_supervisor FROM conges_hierarchy`),
+  ]);
+  if (overrides.roster) return items;
+  const byEmployee = new Map(hierarchy.map(h => [normName(h.employee), h]));
+  return items.map(e => {
+    const h = byEmployee.get(normName(e.name));
+    return { ...e, supervisor: h?.supervisor || null, rhSupervisor: h?.rh_supervisor || null };
+  });
+}
 
-// `sqlOverride`/`rosterOverride` ne sont passés que par les tests.
-export default async function handler(req, res, sqlOverride, rosterOverride) {
+export default async function handler(req, res, overrides = {}) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
   if (req.method === 'OPTIONS') {
     res.status(204).end();
@@ -83,22 +90,41 @@ export default async function handler(req, res, sqlOverride, rosterOverride) {
   }
 
   try {
-    const sql = sqlOverride || getSql();
+    const sql = overrides.sql || getSql();
+    const me = await requireProfile(req, res, sql, overrides.verify);
+    if (!me) return;
+    const actor = me.name;
+
+    const config = overrides.config || await loadConfig(sql);
 
     if (req.method === 'GET') {
       const rows = await sql(SELECT + ' ORDER BY start_date, id');
-      res.status(200).json(rows);
+      const roster = await loadFullRoster(sql, overrides);
+      const scoped = rows
+        .map(l => {
+          if (canSee(actor, l.employee, roster, config)) return l;
+          // Hors périmètre : silhouette minimale (présence/calendrier),
+          // uniquement les congés approuvés, sans type ni note.
+          if (l.status !== 'approved') return null;
+          return {
+            id: l.id, employee: l.employee, startDate: l.startDate,
+            endDate: l.endDate, status: 'approved', type: null, note: null,
+            submittedBy: null, decidedBy: null, createdAt: null, restricted: true,
+          };
+        })
+        .filter(Boolean);
+      res.status(200).json(scoped);
       return;
     }
 
     if (req.method === 'POST') {
       const body = parseBody(req, res);
       if (!body) return;
-      const { employee, startDate, endDate, type } = body;
-      const submittedBy = body.submittedBy || employee;
+      const { startDate, endDate, type } = body;
+      const employee = body.employee || actor;
 
-      if (!employee || !startDate || !endDate || !type) {
-        res.status(400).json({ error: 'employé, dates et type sont requis' });
+      if (!startDate || !endDate || !type) {
+        res.status(400).json({ error: 'dates et type sont requis' });
         return;
       }
       if (body.note != null && typeof body.note !== 'string') {
@@ -118,28 +144,28 @@ export default async function handler(req, res, sqlOverride, rosterOverride) {
         return;
       }
 
-      const roster = rosterOverride || await loadRoster();
+      const roster = await loadFullRoster(sql, overrides);
       if (!findByName(roster, employee)) {
         res.status(400).json({ error: 'Employé inconnu du personnel RH' });
         return;
       }
-      // Seul un approbateur (ou soi-même) peut saisir pour quelqu'un.
-      if (!sameName(submittedBy, employee) &&
-          !canDecide(submittedBy, employee, roster) && !isGlobalAdmin(submittedBy)) {
+      // Saisie pour autrui : réservé à son approbateur ou à un admin global.
+      if (!sameName(actor, employee) &&
+          !canDecide(actor, employee, roster, config) && !isGlobalAdmin(actor, config)) {
         res.status(403).json({ error: 'Vous ne pouvez pas saisir pour cette personne' });
         return;
       }
 
       const note = (body.note || '').trim().slice(0, MAX_NOTE) || null;
-      const status = initialStatus({ type, employee, submittedBy }, roster);
-      const decided = status === 'approved' && !sameName(submittedBy, employee);
+      const status = initialStatus({ type, employee, submittedBy: actor }, roster, config);
+      const decided = status === 'approved' && !sameName(actor, employee);
 
       const rows = await sql(
         `INSERT INTO conges_leaves
            (employee, start_date, end_date, type, note, status, submitted_by, decided_by, decided_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CASE WHEN $8::text IS NULL THEN NULL ELSE NOW() END)
          RETURNING id::text`,
-        [employee, startDate, endDate, type, note, status, submittedBy, decided ? submittedBy : null]
+        [employee, startDate, endDate, type, note, status, actor, decided ? actor : null]
       );
       res.status(201).json({ id: rows[0].id, status });
       return;
@@ -149,10 +175,10 @@ export default async function handler(req, res, sqlOverride, rosterOverride) {
       const id = req.query?.id;
       const body = parseBody(req, res);
       if (!body) return;
-      const { user, action } = body;
+      const { action } = body;
 
-      if (!id || !user || !['approve', 'reject'].includes(action)) {
-        res.status(400).json({ error: 'id, user et action (approve|reject) sont requis' });
+      if (!id || !['approve', 'reject'].includes(action)) {
+        res.status(400).json({ error: 'id et action (approve|reject) sont requis' });
         return;
       }
 
@@ -166,18 +192,17 @@ export default async function handler(req, res, sqlOverride, rosterOverride) {
         return;
       }
 
-      const roster = rosterOverride || await loadRoster();
-      if (!canDecide(user, leave.employee, roster)) {
-        res.status(403).json({ error: "Seul un manager de l'équipe peut décider cette demande" });
+      const roster = await loadFullRoster(sql, overrides);
+      if (!canDecide(actor, leave.employee, roster, config)) {
+        res.status(403).json({ error: 'Seul le superviseur RH désigné peut décider cette demande' });
         return;
       }
 
       const status = action === 'approve' ? 'approved' : 'rejected';
-      // Garde atomique : deux décisions concurrentes -> une seule gagne.
       const updated = await sql(
         `UPDATE conges_leaves SET status = $2, decided_by = $3, decided_at = NOW()
          WHERE id = $1 AND status = 'pending' RETURNING id`,
-        [id, status, user]
+        [id, status, actor]
       );
       if (updated.length === 0) {
         res.status(409).json({ error: 'Cette demande a déjà été traitée' });
@@ -189,18 +214,16 @@ export default async function handler(req, res, sqlOverride, rosterOverride) {
 
     if (req.method === 'DELETE') {
       const id = req.query?.id;
-      const user = req.query?.user;
       if (!id) {
         res.status(400).json({ error: 'id requis' });
         return;
       }
       const rows = await sql('SELECT employee FROM conges_leaves WHERE id = $1', [id]);
       if (rows.length === 0) {
-        // Déjà supprimé — succès idempotent.
-        res.status(200).json({ ok: true });
+        res.status(200).json({ ok: true }); // déjà supprimé — idempotent
         return;
       }
-      if (!user || (!sameName(user, rows[0].employee) && !isGlobalAdmin(user))) {
+      if (!sameName(actor, rows[0].employee) && !isGlobalAdmin(actor, config)) {
         res.status(403).json({ error: 'Vous ne pouvez supprimer que vos propres congés' });
         return;
       }

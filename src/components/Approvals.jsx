@@ -4,10 +4,10 @@ import { fr } from 'date-fns/locale'
 import { TYPE_META } from '../constants'
 import { findByName } from '../utils/names'
 
-// File d'attente des demandes que l'utilisateur courant peut décider.
-// `pending` arrive déjà filtré par App.jsx via leavePolicy.canDecide
-// (managers → leur(s) équipe(s), jamais leur propre demande ; admins → tout).
-export default function Approvals({ employees, pending, onDecide }) {
+// File d'attente des demandes que l'utilisateur courant peut décider,
+// + HISTORIQUE des demandes de son sous-arbre (chaîne de commandement).
+// `pending` et `history` arrivent déjà filtrés par App.jsx (leavePolicy).
+export default function Approvals({ employees, pending, history = [], onDecide }) {
   const [busy, setBusy] = useState(null) // leave id being processed
 
   const teamOf = name => findByName(employees, name)?.team
@@ -67,6 +67,31 @@ export default function Approvals({ employees, pending, onDecide }) {
             </div>
           ))}
         </div>
+      )}
+
+      {history.length > 0 && (
+        <>
+          <h2 style={{ marginTop: 28 }}>Demandes de mon équipe (historique)</h2>
+          <div className="leave-list">
+            {[...history].reverse().slice(0, 50).map(l => (
+              <div key={l.id} className="leave-item">
+                <div className="leave-item-info">
+                  <span className="leave-item-name">
+                    {l.employee}
+                    <span className="team-tag">{teamOf(l.employee) || '—'}</span>
+                  </span>
+                  <span className="leave-item-dates">
+                    {TYPE_META[l.type]?.emoji} {TYPE_META[l.type]?.label || l.type} · {fmtRange(l)}
+                    {l.decidedBy && <> · décidé par {l.decidedBy}</>}
+                  </span>
+                </div>
+                <span className={`status-badge status-${l.status}`}>
+                  {l.status === 'approved' ? 'Approuvé' : l.status === 'rejected' ? 'Refusé' : l.status}
+                </span>
+              </div>
+            ))}
+          </div>
+        </>
       )}
     </div>
   )
