@@ -1,11 +1,13 @@
 // Règles du workflow — fonctions pures, testables.
 //
-// Le roster (via /api/roster) fusionne :
-//   - RH Compliance : { name, team, manager, email, ... }
-//   - la CHAÎNE DE COMMANDEMENT (admin, table conges_hierarchy) :
+// Le roster (via /api/roster) vient de la base RH Compliance PARTAGÉE
+// (rh_entities + rh_org — éditable ici en Admin ET dans RH Compliance) :
+//   - personnel : { name, team, manager, email, ... }
+//   - organigramme (table rh_org) :
 //       supervisor    = N+1 (remonte jusqu'à 5 niveaux)
 //       rhSupervisor  = superviseur RH désigné — SEUL destinataire des
 //                       demandes de congé de la personne
+//       replacements  = remplaçants (binômes anti-chevauchement d'absences)
 //   - la config (DB, éditable en Admin) : { globalAdmins, extraApprovers }
 //
 // Visibilité : chacun voit les personnes EN DESSOUS de lui dans la chaîne
@@ -145,4 +147,45 @@ export function canDecideLeave(actor, leave, roster, config = DEFAULT_CONFIG) {
     return isGlobalAdmin(actor, config) && normName(actor) !== normName(leave.employee)
   }
   return canDecide(actor, leave.employee, roster, config)
+}
+
+// ---- Remplaçants (organigramme partagé rh_org) ----
+// Le roster porte `replacements` : qui peut remplacer la personne. Règle :
+// une personne et son remplaçant ne peuvent pas être ABSENTS en même temps.
+// Le télétravail n'est pas une absence (la personne travaille).
+export const ABSENCE_TYPES = ['conge_paye', 'conge_sans_solde', 'arret_maladie']
+
+// Binômes de remplacement de `employee`, DANS LES DEUX SENS : ses remplaçants
+// désignés + les personnes qu'il/elle remplace (le lien protège les deux).
+export function replacementPartners(employee, roster) {
+  const n = normName(employee)
+  const row = findByName(roster, employee)
+  const direct = row?.replacements || []
+  const reverse = roster
+    .filter(r => (r.replacements || []).some(x => normName(x) === n))
+    .map(r => r.name)
+  const seen = new Set()
+  const out = []
+  for (const p of [...direct, ...reverse]) {
+    const k = normName(p)
+    if (k !== n && !seen.has(k)) { seen.add(k); out.push(p) }
+  }
+  return out
+}
+
+// Absences (non rejetées) des binômes de remplacement qui chevauchent la
+// demande. `allLeaves` : lignes complètes côté serveur ; côté client les
+// silhouettes ont type=null → comptées comme absence (prudence, le serveur
+// tranche avec les vrais types).
+export function replacementConflicts(leave, roster, allLeaves) {
+  if (!leave || !ABSENCE_TYPES.includes(leave.type)) return []
+  const partners = replacementPartners(leave.employee, roster)
+  if (partners.length === 0) return []
+  const pset = new Set(partners.map(normName))
+  return (allLeaves || []).filter(l =>
+    l.status !== 'rejected' &&
+    ABSENCE_TYPES.includes(l.type ?? 'conge_paye') &&
+    pset.has(normName(l.employee)) &&
+    leave.startDate <= l.endDate && l.startDate <= leave.endDate
+  )
 }

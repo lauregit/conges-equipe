@@ -3,6 +3,7 @@ import {
   approversOf, canDecide, isApprover, initialStatus,
   chainOf, subtreeOf, canSee, isGlobalAdmin, MAX_CHAIN,
   leaveDayCount, isSpecialRequest, canDecideLeave,
+  replacementPartners, replacementConflicts, ABSENCE_TYPES,
 } from '../src/leavePolicy.js'
 import { normName, sameName, findByName } from '../src/utils/names.js'
 
@@ -150,6 +151,65 @@ describe('demande spéciale (> 2 semaines)', () => {
     // un arrêt maladie (déclaré) n'est jamais "spécial", même long
     expect(isSpecialRequest({ startDate: '2026-03-01', endDate: '2026-04-30', type: 'arret_maladie' })).toBe(false)
   })
+})
+
+describe('remplaçants (organigramme partagé rh_org)', () => {
+  // Vithusa et Apolline sont remplaçantes l'une de l'autre (lien déclaré
+  // dans UN seul sens : la règle vaut dans les deux).
+  const R = [
+    { name: 'Vithusa VASIDDAN', team: 'CS', replacements: ['Apolline SARAGONI'] },
+    { name: 'Apolline SARAGONI', team: 'CS', replacements: [] },
+    { name: 'Eden KTORZA', team: 'CS', replacements: [] },
+  ]
+
+  it('replacementPartners : les deux sens du lien, sans doublon ni soi-même', () => {
+    expect(replacementPartners('Vithusa VASIDDAN', R)).toEqual(['Apolline SARAGONI'])
+    expect(replacementPartners('Apolline SARAGONI', R)).toEqual(['Vithusa VASIDDAN']) // sens inverse
+    expect(replacementPartners('Eden KTORZA', R)).toEqual([])
+  })
+
+  it('replacementConflicts : chevauchement avec l’absence du binôme → conflit', () => {
+    const leaves = [
+      { employee: 'Vithusa VASIDDAN', startDate: '2026-09-01', endDate: '2026-09-10', type: 'conge_paye', status: 'approved' },
+    ]
+    const ask = (s, e) => replacementConflicts(
+      { employee: 'Apolline SARAGONI', startDate: s, endDate: e, type: 'conge_paye' }, R, leaves)
+    expect(ask('2026-09-05', '2026-09-06')).toHaveLength(1)  // inclus
+    expect(ask('2026-09-10', '2026-09-12')).toHaveLength(1)  // borne partagée
+    expect(ask('2026-09-11', '2026-09-12')).toHaveLength(0)  // après
+    expect(ask('2026-08-25', '2026-08-31')).toHaveLength(0)  // avant
+  })
+
+  it('pas de conflit : demande TT, absence TT du binôme, congé rejeté, ou non-binôme', () => {
+    const leaves = [
+      { employee: 'Vithusa VASIDDAN', startDate: '2026-09-01', endDate: '2026-09-10', type: 'teletravail', status: 'approved' },
+      { employee: 'Vithusa VASIDDAN', startDate: '2026-09-01', endDate: '2026-09-10', type: 'conge_paye', status: 'rejected' },
+      { employee: 'Eden KTORZA', startDate: '2026-09-01', endDate: '2026-09-10', type: 'conge_paye', status: 'approved' },
+    ]
+    // le TT du binôme n'est pas une absence ; le rejeté ne compte pas ; Eden n'est pas binôme
+    expect(replacementConflicts(
+      { employee: 'Apolline SARAGONI', startDate: '2026-09-05', endDate: '2026-09-06', type: 'conge_paye' }, R, leaves
+    )).toHaveLength(0)
+    // demander du TT n'est pas une absence → jamais de conflit
+    expect(replacementConflicts(
+      { employee: 'Apolline SARAGONI', startDate: '2026-09-05', endDate: '2026-09-06', type: 'teletravail' }, R,
+      [{ employee: 'Vithusa VASIDDAN', startDate: '2026-09-05', endDate: '2026-09-06', type: 'conge_paye', status: 'approved' }]
+    )).toHaveLength(0)
+    expect(ABSENCE_TYPES).not.toContain('teletravail')
+  })
+
+  it('silhouette (type null, côté client) comptée comme absence par prudence', () => {
+    const leaves = [
+      { employee: 'Vithusa VASIDDAN', startDate: '2026-09-01', endDate: '2026-09-10', type: null, status: 'approved', restricted: true },
+    ]
+    expect(replacementConflicts(
+      { employee: 'Apolline SARAGONI', startDate: '2026-09-05', endDate: '2026-09-06', type: 'conge_paye' }, R, leaves
+    )).toHaveLength(1)
+  })
+})
+
+describe('demande spéciale — canDecideLeave', () => {
+  const CFG = { extraApprovers: {}, globalAdmins: ['Laure COHEN', 'Yoann VALENSI'] }
   it('canDecideLeave : demande normale = superviseur RH ; spéciale = direction seulement', () => {
     const normal = { employee: 'Vithusa VASIDDAN', startDate: '2026-03-01', endDate: '2026-03-10', type: 'conge_paye' }
     const special = { employee: 'Vithusa VASIDDAN', startDate: '2026-03-01', endDate: '2026-03-20', type: 'conge_paye' }

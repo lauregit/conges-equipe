@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { format } from 'date-fns'
 import { doLeavesOverlap } from '../utils/dateHelpers'
 import { LEAVE_TYPES as TYPE_KEYS, TYPE_META, DECLARED_TYPES } from '../constants'
-import { initialStatus, isSpecialRequest } from '../leavePolicy'
+import { initialStatus, isSpecialRequest, replacementConflicts } from '../leavePolicy'
 import { sameName } from '../utils/names'
 const LEAVE_TYPES = TYPE_KEYS.map(key => ({ key, label: `${TYPE_META[key].emoji} ${TYPE_META[key].label}` }))
 
@@ -24,6 +24,10 @@ export default function LeaveForm({ onSubmit, onCancel, currentUser, isSuperAdmi
   const declared = DECLARED_TYPES.includes(type)
   const validRange = startDate && endDate && startDate <= endDate
   const special = validRange && isSpecialRequest({ startDate, endDate, type })
+  // Remplaçants (organigramme partagé) : binôme déjà absent sur ces dates ?
+  const repConflicts = validRange
+    ? replacementConflicts({ employee: actingFor, startDate, endDate, type }, roster, allLeaves)
+    : []
   const overlaps = validRange && targetLeaves.some(l =>
     l.status !== 'rejected' && doLeavesOverlap(startDate, endDate, l)
   )
@@ -116,6 +120,14 @@ export default function LeaveForm({ onSubmit, onCancel, currentUser, isSuperAdmi
           {special && (
             <div className="banner banner-warning" role="alert">
               ⚠️ Demande spéciale : plus de 2 semaines. Elle devra être validée par la direction (Laure / Yoann), pas par votre superviseur habituel.
+            </div>
+          )}
+
+          {repConflicts.length > 0 && (
+            <div className="banner banner-warning" role="alert">
+              ⚠️ Conflit de remplacement : {repConflicts[0].employee} est absent(e) du{' '}
+              {repConflicts[0].startDate} au {repConflicts[0].endDate}. Vous êtes mutuellement
+              remplaçants — vous ne pouvez pas être absents en même temps.
             </div>
           )}
 
