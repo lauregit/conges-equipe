@@ -1,8 +1,8 @@
 import { neon } from '@neondatabase/serverless';
 import { requireProfile } from './_auth.js';
 import { loadConfig, saveConfig, BOOTSTRAP_ADMIN_EMAILS } from './_config.js';
-import { loadRoster } from './_rhroster.js';
-import { normName, findByName } from '../src/utils/names.js';
+import { loadRoster, saveOrgHierarchy, saveOrgReplacements } from './_rhroster.js';
+import { normName, findByName, sameName } from '../src/utils/names.js';
 import { isGlobalAdmin, chainOf, MAX_CHAIN } from '../src/leavePolicy.js';
 
 // Système d'administration (admins globaux uniquement) :
@@ -10,9 +10,12 @@ import { isGlobalAdmin, chainOf, MAX_CHAIN } from '../src/leavePolicy.js';
 //   POST {action:'approve-binding'|'reject-binding', uid}
 //        {action:'save-config', config:{globalAdmins, extraApprovers}}
 //        {action:'set-hierarchy', employee, supervisor, rhSupervisor}
+//        {action:'set-replacements', employee, replacements:[noms]}
 //
-// La chaîne de commandement est plafonnée à 5 niveaux et protégée contre
-// les cycles à l'écriture.
+// La chaîne de commandement et les remplaçants vivent dans la table
+// PARTAGÉE rh_org (base RH Compliance) : les modifications faites ici sont
+// visibles dans RH Compliance et inversement. Chaîne plafonnée à 5 niveaux
+// et protégée contre les cycles à l'écriture.
 
 let _sql;
 function getSql() {
@@ -44,12 +47,21 @@ export default async function handler(req, res, overrides = {}) {
     }
 
     if (req.method === 'GET') {
-      const [bindings, hierarchy] = await Promise.all([
+      const [bindings, roster] = await Promise.all([
         sql(`SELECT uid, name, email, status, email_verified_match AS "emailMatch",
                     to_char(created_at, 'YYYY-MM-DD') AS "createdAt"
              FROM conges_profiles ORDER BY status DESC, name`),
-        sql(`SELECT employee, supervisor, rh_supervisor AS "rhSupervisor" FROM conges_hierarchy ORDER BY employee`),
+        overrides.roster ? Promise.resolve(overrides.roster) : loadRoster(),
       ]);
+      // L'organigramme vient de la table partagée rh_org (via le roster).
+      const hierarchy = roster
+        .filter(r => r.supervisor || r.rhSupervisor || (r.replacements || []).length > 0)
+        .map(r => ({
+          employee: r.name,
+          supervisor: r.supervisor || null,
+          rhSupervisor: r.rhSupervisor || null,
+          replacements: r.replacements || [],
+        }));
       res.status(200).json({ bindings, config, hierarchy });
       return;
     }
@@ -110,14 +122,12 @@ export default async function handler(req, res, overrides = {}) {
           res.status(400).json({ error: 'Une personne ne peut pas être son propre superviseur' });
           return;
         }
-        // Anti-cycle + plafond 5 niveaux : simule la chaîne avec la nouvelle arête.
+        // Anti-cycle + plafond 5 niveaux : simule la chaîne avec la nouvelle
+        // arête (le roster porte déjà les N+1 actuels, issus de rh_org).
         if (supervisor) {
-          const hierarchy = await sql(`SELECT employee, supervisor FROM conges_hierarchy`);
-          const simulated = roster.map(r => {
-            const h = hierarchy.find(x => normName(x.employee) === normName(r.name));
-            const sup = normName(r.name) === normName(employee) ? supervisor : (h?.supervisor || null);
-            return { ...r, supervisor: sup };
-          });
+          const simulated = roster.map(r =>
+            sameName(r.name, employee) ? { ...r, supervisor } : r
+          );
           const chain = chainOf(employee, simulated);
           if (chain.some(n => normName(n) === normName(employee))) {
             res.status(400).json({ error: 'Cycle détecté dans la chaîne de commandement' });
@@ -128,17 +138,44 @@ export default async function handler(req, res, overrides = {}) {
             return;
           }
         }
-        if (!supervisor && !rhSupervisor) {
-          await sql(`DELETE FROM conges_hierarchy WHERE lower(employee) = lower($1)`, [employee]);
-        } else {
-          await sql(
-            `INSERT INTO conges_hierarchy (employee, supervisor, rh_supervisor, updated_at)
-             VALUES ($1, $2, $3, NOW())
-             ON CONFLICT (employee) DO UPDATE
-               SET supervisor = EXCLUDED.supervisor, rh_supervisor = EXCLUDED.rh_supervisor, updated_at = NOW()`,
-            [findByName(roster, employee).name, supervisor, rhSupervisor]
-          );
+        // Écrit dans la table PARTAGÉE rh_org (base RH) — les remplaçants
+        // de la personne sont préservés.
+        const empRow = findByName(roster, employee);
+        const supRow = supervisor ? findByName(roster, supervisor) : null;
+        const rhsRow = rhSupervisor ? findByName(roster, rhSupervisor) : null;
+        await (overrides.saveOrgHierarchy || saveOrgHierarchy)(
+          empRow.id, supRow?.id ?? null, rhsRow?.id ?? null, me.name
+        );
+        res.status(200).json({ ok: true });
+        return;
+      }
+
+      if (action === 'set-replacements') {
+        const employee = String(body.employee || '').trim();
+        const replacements = Array.isArray(body.replacements) ? body.replacements : null;
+        if (!employee || !replacements) {
+          res.status(400).json({ error: 'employee et replacements (liste) sont requis' });
+          return;
         }
+        const roster = overrides.roster || await loadRoster();
+        const empRow = findByName(roster, employee);
+        if (!empRow) {
+          res.status(400).json({ error: `« ${employee} » ne figure pas dans le personnel RH` });
+          return;
+        }
+        const ids = [];
+        for (const name of replacements) {
+          const row = findByName(roster, String(name || '').trim());
+          if (!row) {
+            res.status(400).json({ error: `Remplaçant : « ${name} » ne figure pas dans le personnel RH` });
+            return;
+          }
+          if (sameName(row.name, employee)) continue; // pas soi-même
+          ids.push(row.id);
+        }
+        // Écrit dans la table PARTAGÉE rh_org — la chaîne (N+1, validateur)
+        // de la personne est préservée.
+        await (overrides.saveOrgReplacements || saveOrgReplacements)(empRow.id, ids, me.name);
         res.status(200).json({ ok: true });
         return;
       }

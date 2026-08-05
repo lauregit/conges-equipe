@@ -46,22 +46,75 @@ function isOrgManager(e) {
   return false;
 }
 
-// Salariés (CDI + alternants) actifs, format roster de l'app.
+// Salariés (CDI + alternants) actifs, format roster de l'app — ENRICHIS de
+// l'organigramme partagé `rh_org` (même base que rh_entities, éditable depuis
+// RH Compliance ET depuis l'Admin de cette app) :
+//   supervisor    = N+1 (le N+2 s'obtient en remontant la chaîne)
+//   rhSupervisor  = validateur congés désigné
+//   replacements  = qui peut remplacer cette personne (règle anti-chevauchement)
 export async function loadRoster(sqlOverride) {
   const sql = sqlOverride || getRhSql();
-  const rows = await sql`SELECT data FROM rh_entities WHERE kind = 'employee'`;
-  return rows
-    .map(r => (typeof r.data === 'string' ? JSON.parse(r.data) : r.data))
+  const [rows, orgRows] = await Promise.all([
+    sql`SELECT data FROM rh_entities WHERE kind = 'employee'`,
+    sql`SELECT employee_id, supervisor_id, rh_supervisor_id, replacement_ids FROM rh_org`
+      // 42P01 = table pas encore créée : roster sans organigramme. Toute
+      // autre erreur remonte (ne pas dégrader silencieusement les approbations).
+      .catch(err => { if (err?.code === '42P01') return []; throw err; }),
+  ]);
+  const all = rows.map(r => (typeof r.data === 'string' ? JSON.parse(r.data) : r.data));
+  // Résolution id → nom sur TOUT le personnel (un lien vers une personne
+  // devenue inactive doit encore s'afficher, pas devenir null en silence).
+  const nameById = new Map(
+    all.filter(e => e && e.first_name && e.last_name)
+       .map(e => [Number(e.id), `${String(e.first_name).trim()} ${String(e.last_name).trim()}`])
+  );
+  const orgById = new Map(orgRows.map(o => [Number(o.employee_id), o]));
+  const nameOf = id => (id == null ? null : nameById.get(Number(id)) || null);
+  return all
     .filter(e => e && e.active !== false && e.first_name && e.last_name &&
       (e.type === 'cdi' || e.type === 'alternant'))
-    .map(e => ({
-      id: e.id,
-      name: `${String(e.first_name).trim()} ${String(e.last_name).trim()}`,
-      email: e.email || null,
-      team: groupOf(e),
-      position: e.position || e.poste_reel || null,
-      manager: isOrgManager(e),
-      type: e.type || null,
-    }))
+    .map(e => {
+      const o = orgById.get(Number(e.id));
+      const reps = Array.isArray(o?.replacement_ids) ? o.replacement_ids
+        : (typeof o?.replacement_ids === 'string' ? JSON.parse(o.replacement_ids) : []);
+      return {
+        id: e.id,
+        name: `${String(e.first_name).trim()} ${String(e.last_name).trim()}`,
+        email: e.email || null,
+        team: groupOf(e),
+        position: e.position || e.poste_reel || null,
+        manager: isOrgManager(e),
+        type: e.type || null,
+        supervisor: nameOf(o?.supervisor_id),
+        rhSupervisor: nameOf(o?.rh_supervisor_id),
+        replacements: (reps || []).map(nameOf).filter(Boolean),
+      };
+    })
     .sort((a, b) => a.team.localeCompare(b.team) || a.name.localeCompare(b.name));
+}
+
+// Écrit la chaîne de commandement dans la table partagée rh_org.
+// replacement_ids est volontairement PRÉSERVÉ (mis à jour séparément).
+export async function saveOrgHierarchy(employeeId, supervisorId, rhSupervisorId, updatedBy, sqlOverride) {
+  const sql = sqlOverride || getRhSql();
+  await sql`INSERT INTO rh_org (employee_id, supervisor_id, rh_supervisor_id, updated_at, updated_by)
+            VALUES (${Number(employeeId)}, ${supervisorId == null ? null : Number(supervisorId)},
+                    ${rhSupervisorId == null ? null : Number(rhSupervisorId)}, now(), ${updatedBy})
+            ON CONFLICT (employee_id) DO UPDATE SET
+              supervisor_id    = EXCLUDED.supervisor_id,
+              rh_supervisor_id = EXCLUDED.rh_supervisor_id,
+              updated_at       = now(),
+              updated_by       = EXCLUDED.updated_by`;
+}
+
+// Écrit les remplaçants dans rh_org (supervisor/rh_supervisor préservés).
+export async function saveOrgReplacements(employeeId, replacementIds, updatedBy, sqlOverride) {
+  const sql = sqlOverride || getRhSql();
+  const ids = [...new Set((replacementIds || []).map(Number))].filter(x => x !== Number(employeeId));
+  await sql`INSERT INTO rh_org (employee_id, replacement_ids, updated_at, updated_by)
+            VALUES (${Number(employeeId)}, ${JSON.stringify(ids)}::jsonb, now(), ${updatedBy})
+            ON CONFLICT (employee_id) DO UPDATE SET
+              replacement_ids = EXCLUDED.replacement_ids,
+              updated_at      = now(),
+              updated_by      = EXCLUDED.updated_by`;
 }

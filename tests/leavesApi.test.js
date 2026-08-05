@@ -2,11 +2,12 @@ import { describe, it, expect } from 'vitest'
 import handler from '../api/leaves.js'
 
 // Roster fixture (chaîne : Eden -> superviseur RH Vithusa).
+// Eden et Lucas sont binômes de remplacement (lien rh_org, un seul sens suffit).
 const ROSTER = [
-  { name: 'Vithusa VASIDDAN', team: 'Customer Success', manager: false, supervisor: null, rhSupervisor: null },
-  { name: 'Eden KTORZA', team: 'Customer Success', manager: false, supervisor: 'Vithusa VASIDDAN', rhSupervisor: 'Vithusa VASIDDAN' },
-  { name: 'Lucas DOSSO', team: 'Marketing', manager: true, supervisor: null, rhSupervisor: null },
-  { name: 'Salvatore MACRI', team: 'Marketing', manager: false, supervisor: null, rhSupervisor: null },
+  { name: 'Vithusa VASIDDAN', team: 'Customer Success', manager: false, supervisor: null, rhSupervisor: null, replacements: [] },
+  { name: 'Eden KTORZA', team: 'Customer Success', manager: false, supervisor: 'Vithusa VASIDDAN', rhSupervisor: 'Vithusa VASIDDAN', replacements: ['Lucas DOSSO'] },
+  { name: 'Lucas DOSSO', team: 'Marketing', manager: true, supervisor: null, rhSupervisor: null, replacements: [] },
+  { name: 'Salvatore MACRI', team: 'Marketing', manager: false, supervisor: null, rhSupervisor: null, replacements: [] },
 ]
 
 const CONFIG = { extraApprovers: {}, globalAdmins: ['Laure COHEN', 'Yoann VALENSI'] }
@@ -144,6 +145,44 @@ describe('POST — identité du jeton, policy serveur', () => {
       const { res } = await call({ method: 'POST', body })
       expect(res.statusCode, JSON.stringify(body)).toBe(400)
     }
+  })
+})
+
+describe('POST — conflit de remplacement (organigramme partagé rh_org)', () => {
+  // Lucas (binôme d'Eden) est déjà absent sur des dates qui chevauchent.
+  const lucasAbsent = {
+    id: '9', employee: 'Lucas DOSSO', startDate: '2026-09-03', endDate: '2026-09-08',
+    type: 'conge_paye', note: null, status: 'approved',
+    submittedBy: 'Lucas DOSSO', decidedBy: null, createdAt: null,
+  }
+
+  it('binôme déjà absent sur les dates → 409, rien n’est inséré', async () => {
+    const { res, sql } = await call(
+      { method: 'POST', body: valid },
+      { sqlOpts: { list: [lucasAbsent] } }
+    )
+    expect(res.statusCode).toBe(409)
+    expect(res.body.error).toMatch(/remplac/i)
+    expect(sql.calls.some(c => /INSERT INTO conges_leaves/i.test(c.query))).toBe(false)
+  })
+
+  it('un admin global peut forcer → 201', async () => {
+    const { res } = await call(
+      { method: 'POST', body: { ...valid, employee: 'Eden KTORZA' } },
+      { as: 'Yoann VALENSI', sqlOpts: { list: [lucasAbsent] } }
+    )
+    expect(res.statusCode).toBe(201)
+  })
+
+  it('TT du binôme ou congé rejeté → pas un conflit → 201', async () => {
+    const { res } = await call(
+      { method: 'POST', body: valid },
+      { sqlOpts: { list: [
+        { ...lucasAbsent, type: 'teletravail' },
+        { ...lucasAbsent, status: 'rejected' },
+      ] } }
+    )
+    expect(res.statusCode).toBe(201)
   })
 })
 

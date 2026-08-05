@@ -51,8 +51,9 @@ export default function AdminPanel({ employees, onChanged }) {
 
   function hierRow(emp) {
     const h = hierByName.get(normName(emp.name)) || {}
+    const reps = h.replacements || []
     return (
-      <div key={emp.name} className="team-row" style={{ gridTemplateColumns: '1.3fr 0.8fr 1.2fr 1.2fr' }}>
+      <div key={emp.name} className="team-row" style={{ gridTemplateColumns: '1.3fr 0.8fr 1.1fr 1.1fr 1.1fr' }}>
         <span title={chainOf(emp.name, employees).join(' → ') || '—'}>
           {emp.name}
           <span className="team-tag">{emp.team}</span>
@@ -76,6 +77,32 @@ export default function AdminPanel({ employees, onChanged }) {
           <option value="">— Superviseur RH (approbation) —</option>
           {names.filter(n => !sameName(n, emp.name)).map(n => <option key={n} value={n}>{n}</option>)}
         </select>
+        <span style={{ display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center' }}>
+          {reps.map(r => (
+            <span key={r} className="team-tag" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+              {r}
+              <button
+                type="button"
+                aria-label={`Retirer ${r} des remplaçants de ${emp.name}`}
+                disabled={busy === `r:${emp.name}`}
+                onClick={() => act({ action: 'set-replacements', employee: emp.name, replacements: reps.filter(x => !sameName(x, r)) }, `r:${emp.name}`)}
+                style={{ border: 'none', background: 'none', cursor: 'pointer', padding: 0, fontWeight: 700 }}
+              >✕</button>
+            </span>
+          ))}
+          <select
+            value=""
+            aria-label={`Ajouter un remplaçant à ${emp.name}`}
+            disabled={busy === `r:${emp.name}`}
+            onChange={e => {
+              if (!e.target.value) return
+              act({ action: 'set-replacements', employee: emp.name, replacements: [...reps, e.target.value] }, `r:${emp.name}`)
+            }}
+          >
+            <option value="">+ remplaçant…</option>
+            {names.filter(n => !sameName(n, emp.name) && !reps.some(r => sameName(r, n))).map(n => <option key={n} value={n}>{n}</option>)}
+          </select>
+        </span>
       </div>
     )
   }
@@ -104,11 +131,14 @@ export default function AdminPanel({ employees, onChanged }) {
       </div>
 
       <div className="presence-team">
-        <h3>Chaîne de commandement <span className="presence-count">{data.hierarchy.length} définie(s)</span></h3>
+        <h3>Chaîne de commandement &amp; remplaçants <span className="presence-count">{data.hierarchy.length} définie(s)</span></h3>
         <p className="team-hint">
           N+1 = chaîne de visibilité (jusqu'à 5 niveaux : chacun voit les données des personnes
           en dessous de lui). Superviseur RH = <strong>seul destinataire</strong> des demandes de
           congé de la personne. Sans superviseur RH : repli sur les managers du pôle.
+          Remplaçants = binômes qui se couvrent : ils <strong>ne peuvent pas être absents en même
+          temps</strong>. Données partagées avec RH Compliance (page « Organigramme &amp; Remplaçants ») —
+          toute modification ici s'applique aussi là-bas, et inversement.
         </p>
         <input
           placeholder="Filtrer par nom ou équipe…"

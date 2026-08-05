@@ -2,11 +2,12 @@ import { neon } from '@neondatabase/serverless';
 import { loadRoster } from './_rhroster.js';
 import { requireToken } from './_auth.js';
 import { loadConfig } from './_config.js';
-import { normName } from '../src/utils/names.js';
 
-// Personnel (RH Compliance) + chaîne de commandement (conges_hierarchy,
-// éditée en Admin) + config des rôles. Connexion requise : l'annuaire ne
-// doit pas être public.
+// Personnel + organigramme : tout vient de la base RH Compliance partagée
+// (rh_entities + rh_org — voir _rhroster.js). La chaîne de commandement,
+// le validateur congés et les remplaçants sont ÉDITABLES DES DEUX CÔTÉS
+// (Admin ici, page « Organigramme & Remplaçants » dans RH Compliance).
+// Connexion requise : l'annuaire ne doit pas être public.
 
 let _sql;
 function getSql() {
@@ -35,19 +36,12 @@ export default async function handler(req, res, overrides = {}) {
     if (!user) return;
 
     const sql = overrides.sql || getSql();
-    const [items, hierarchy, config] = await Promise.all([
+    const [items, config] = await Promise.all([
       overrides.roster ? Promise.resolve(overrides.roster) : loadRoster(),
-      sql(`SELECT employee, supervisor, rh_supervisor FROM conges_hierarchy`),
       loadConfig(sql),
     ]);
 
-    const byEmployee = new Map(hierarchy.map(h => [normName(h.employee), h]));
-    const merged = items.map(e => {
-      const h = byEmployee.get(normName(e.name));
-      return { ...e, supervisor: h?.supervisor || null, rhSupervisor: h?.rh_supervisor || null };
-    });
-
-    res.status(200).json({ items: merged, config });
+    res.status(200).json({ items, config });
   } catch (err) {
     console.error('roster api error:', err);
     res.status(500).json({ error: 'Erreur interne du serveur' });
