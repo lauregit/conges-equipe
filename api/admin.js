@@ -1,7 +1,7 @@
 import { neon } from '@neondatabase/serverless';
 import { requireProfile } from './_auth.js';
 import { loadConfig, saveConfig, BOOTSTRAP_ADMIN_EMAILS } from './_config.js';
-import { loadRoster, saveOrgHierarchy, saveOrgReplacements } from './_rhroster.js';
+import { loadRoster, saveOrgHierarchy, saveOrgReplacements, saveOrgTeamOverride } from './_rhroster.js';
 import { normName, findByName, sameName } from '../src/utils/names.js';
 import { isGlobalAdmin, chainOf, MAX_CHAIN } from '../src/leavePolicy.js';
 
@@ -11,6 +11,7 @@ import { isGlobalAdmin, chainOf, MAX_CHAIN } from '../src/leavePolicy.js';
 //        {action:'save-config', config:{globalAdmins, extraApprovers}}
 //        {action:'set-hierarchy', employee, supervisor, rhSupervisor}
 //        {action:'set-replacements', employee, replacements:[noms]}
+//        {action:'set-team-override', employee, teamOverride}
 //
 // La chaîne de commandement et les remplaçants vivent dans la table
 // PARTAGÉE rh_org (base RH Compliance) : les modifications faites ici sont
@@ -176,6 +177,24 @@ export default async function handler(req, res, overrides = {}) {
         // Écrit dans la table PARTAGÉE rh_org — la chaîne (N+1, validateur)
         // de la personne est préservée.
         await (overrides.saveOrgReplacements || saveOrgReplacements)(empRow.id, ids, me.name);
+        res.status(200).json({ ok: true });
+        return;
+      }
+
+      if (action === 'set-team-override') {
+        const employee = String(body.employee || '').trim();
+        const teamOverride = String(body.teamOverride || '').trim() || null;
+        if (!employee) {
+          res.status(400).json({ error: 'employee requis' });
+          return;
+        }
+        const roster = overrides.roster || await loadRoster();
+        const empRow = findByName(roster, employee);
+        if (!empRow) {
+          res.status(400).json({ error: `« ${employee} » ne figure pas dans le personnel RH` });
+          return;
+        }
+        await (overrides.saveOrgTeamOverride || saveOrgTeamOverride)(empRow.id, teamOverride, me.name);
         res.status(200).json({ ok: true });
         return;
       }
