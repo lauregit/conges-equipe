@@ -60,6 +60,15 @@ describe('chaîne de commandement', () => {
     expect(canSee('Laure COHEN', 'Eden KTORZA', ROSTER, CONFIG)).toBe(true)       // admin global
   })
 
+  it('canSee : le superviseur RH désigné voit son approuvé même HORS chaîne N+1', () => {
+    const r = [
+      ...ROSTER,
+      { name: 'Louise HEYL', team: 'B2B', manager: false, supervisor: null, rhSupervisor: 'Eden KTORZA' },
+    ]
+    expect(canSee('Eden KTORZA', 'Louise HEYL', r, CONFIG)).toBe(true)   // décideur → voit
+    expect(canSee('Louise HEYL', 'Eden KTORZA', r, CONFIG)).toBe(false)  // pas l'inverse
+  })
+
   it('subtreeOf : tout le sous-arbre, tous niveaux', () => {
     expect(subtreeOf('Andrea LEVY', ROSTER, CONFIG).sort()).toEqual(
       ['Apolline SARAGONI', 'Eden KTORZA', 'Vithusa VASIDDAN'].sort()
