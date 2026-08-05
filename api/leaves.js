@@ -1,7 +1,7 @@
 import { neon } from '@neondatabase/serverless';
 import { LEAVE_TYPES } from '../src/constants.js';
-import { initialStatus, canDecide, canDecideLeave, isSpecialRequest, canSee, isGlobalAdmin } from '../src/leavePolicy.js';
-import { normName, findByName, sameName } from '../src/utils/names.js';
+import { initialStatus, canDecide, canDecideLeave, isSpecialRequest, canSee, isGlobalAdmin, replacementPartners, replacementConflicts, ABSENCE_TYPES } from '../src/leavePolicy.js';
+import { findByName, sameName } from '../src/utils/names.js';
 import { loadRoster } from './_rhroster.js';
 import { requireProfile } from './_auth.js';
 import { loadConfig } from './_config.js';
@@ -65,18 +65,10 @@ function parseBody(req, res) {
   return req.body || {};
 }
 
-// Fusion roster RH + chaîne de commandement (comme /api/roster).
-async function loadFullRoster(sql, overrides) {
-  const [items, hierarchy] = await Promise.all([
-    overrides.roster ? Promise.resolve(overrides.roster) : loadRoster(),
-    overrides.roster ? Promise.resolve([]) : sql(`SELECT employee, supervisor, rh_supervisor FROM conges_hierarchy`),
-  ]);
-  if (overrides.roster) return items;
-  const byEmployee = new Map(hierarchy.map(h => [normName(h.employee), h]));
-  return items.map(e => {
-    const h = byEmployee.get(normName(e.name));
-    return { ...e, supervisor: h?.supervisor || null, rhSupervisor: h?.rh_supervisor || null };
-  });
+// Roster complet : personnel + organigramme, tout vient de la base RH
+// partagée (rh_entities + rh_org) via loadRoster — voir _rhroster.js.
+async function loadFullRoster(overrides) {
+  return overrides.roster ? overrides.roster : loadRoster();
 }
 
 export default async function handler(req, res, overrides = {}) {
@@ -99,7 +91,7 @@ export default async function handler(req, res, overrides = {}) {
 
     if (req.method === 'GET') {
       const rows = await sql(SELECT + ' ORDER BY start_date, id');
-      const roster = await loadFullRoster(sql, overrides);
+      const roster = await loadFullRoster(overrides);
       const scoped = rows
         .map(l => {
           if (canSee(actor, l.employee, roster, config)) return l;
@@ -144,7 +136,7 @@ export default async function handler(req, res, overrides = {}) {
         return;
       }
 
-      const roster = await loadFullRoster(sql, overrides);
+      const roster = await loadFullRoster(overrides);
       if (!findByName(roster, employee)) {
         res.status(400).json({ error: 'Employé inconnu du personnel RH' });
         return;
@@ -154,6 +146,27 @@ export default async function handler(req, res, overrides = {}) {
           !canDecide(actor, employee, roster, config) && !isGlobalAdmin(actor, config)) {
         res.status(403).json({ error: 'Vous ne pouvez pas saisir pour cette personne' });
         return;
+      }
+
+      // Remplaçants (organigramme partagé rh_org) : une personne et son
+      // remplaçant ne peuvent pas être absents en même temps — sinon plus
+      // personne pour couvrir le poste. Seul un admin global peut forcer.
+      if (ABSENCE_TYPES.includes(type) && !isGlobalAdmin(actor, config) &&
+          replacementPartners(employee, roster).length > 0) {
+        const others = await sql(
+          SELECT + ` WHERE status <> 'rejected' AND end_date >= $1 AND start_date <= $2`,
+          [startDate, endDate]
+        );
+        const conflicts = replacementConflicts({ employee, startDate, endDate, type }, roster, others);
+        if (conflicts.length > 0) {
+          const c = conflicts[0];
+          res.status(409).json({
+            error: `Conflit de remplacement : ${c.employee} est déjà absent(e) du ${c.startDate} au ${c.endDate}. ` +
+              `Vous êtes mutuellement remplaçants — vous ne pouvez pas être absents en même temps. ` +
+              `Contactez la direction si c'est indispensable.`,
+          });
+          return;
+        }
       }
 
       const note = (body.note || '').trim().slice(0, MAX_NOTE) || null;
@@ -196,7 +209,7 @@ export default async function handler(req, res, overrides = {}) {
         return;
       }
 
-      const roster = await loadFullRoster(sql, overrides);
+      const roster = await loadFullRoster(overrides);
       if (!canDecideLeave(actor, leave, roster, config)) {
         const msg = isSpecialRequest(leave)
           ? 'Demande spéciale (plus de 2 semaines) : validation réservée à la direction (Laure/Yoann).'
