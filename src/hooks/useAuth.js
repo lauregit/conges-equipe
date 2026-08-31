@@ -1,14 +1,10 @@
-import { useState, useEffect } from 'react'
-import { onAuthStateChanged } from 'firebase/auth'
-import { auth } from '../firebase'
-import { fetchProfile, saveProfileApi } from '../api'
+import { useState, useEffect, useCallback } from 'react'
+import { getSessionToken, clearSessionToken, fetchProfile, saveProfileApi } from '../api'
 
-// Firebase = AUTHENTIFICATION uniquement (identité + mot de passe, y compris
-// via l'onglet Certilogia). Le profil (compte -> nom du personnel) vit dans
-// Neon et peut être 'pending' (liaison en attente de validation admin quand
-// l'email de connexion ne correspond pas à l'email RH).
-// Les rôles (admin global, encadrant) dépendent de la config en base et de
-// la chaîne de commandement — calculés dans App après chargement du roster.
+// Session maison (Neon), pas Firebase : le jeton signé par
+// api/_session.js après validation Certilogia est stocké en localStorage.
+// Au montage, on le valide en rechargeant le profil — un jeton expiré/
+// invalide (401) déconnecte silencieusement.
 
 export async function saveProfile(_uid, name) {
   return saveProfileApi(name) // -> { ok, name, status }
@@ -16,27 +12,29 @@ export async function saveProfile(_uid, name) {
 
 export function useAuth() {
   const [state, setState] = useState({
-    firebaseUser: undefined, // undefined = loading, null = logged out
+    authed: undefined, // undefined = loading, false = logged out, true = logged in
     profile: null,
     loading: true,
   })
 
-  useEffect(() => {
-    const unsub = onAuthStateChanged(auth, async (fbUser) => {
-      if (!fbUser) {
-        setState({ firebaseUser: null, profile: null, loading: false })
-        return
-      }
-      let profile = null
-      try {
-        profile = await fetchProfile() // { name, status } | null
-      } catch (err) {
-        console.error('profile load failed:', err)
-      }
-      setState({ firebaseUser: fbUser, profile, loading: false })
-    })
-    return unsub
+  const refresh = useCallback(async () => {
+    const token = getSessionToken()
+    if (!token) {
+      setState({ authed: false, profile: null, loading: false })
+      return
+    }
+    try {
+      const profile = await fetchProfile() // { name, status } | null
+      setState({ authed: true, profile, loading: false })
+    } catch (err) {
+      console.error('profile load failed:', err)
+      // Jeton invalide/expiré : la session n'a plus de sens, on nettoie.
+      if (String(err.message || '').match(/connexion requise/i)) clearSessionToken()
+      setState({ authed: false, profile: null, loading: false })
+    }
   }, [])
 
-  return state
+  useEffect(() => { refresh() }, [refresh])
+
+  return { ...state, refresh }
 }

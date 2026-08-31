@@ -1,13 +1,23 @@
 // Data layer : congés + profils + hiérarchie dans Neon (fonctions /api/*),
 // personnel depuis RH Compliance. TOUTES les requêtes portent le jeton de
-// session Firebase — l'identité est vérifiée côté serveur.
+// session maison (voir api/_session.js) — l'identité est vérifiée côté serveur.
 
-import { auth } from './firebase'
 import { isApprover, isGlobalAdmin } from './leavePolicy'
 
+const TOKEN_KEY = 'conges_session_token'
+
+export function getSessionToken() {
+  return localStorage.getItem(TOKEN_KEY)
+}
+export function setSessionToken(token) {
+  localStorage.setItem(TOKEN_KEY, token)
+}
+export function clearSessionToken() {
+  localStorage.removeItem(TOKEN_KEY)
+}
+
 async function authedFetch(url, options = {}) {
-  const user = auth.currentUser
-  const token = user ? await user.getIdToken() : null
+  const token = getSessionToken()
   return fetch(url, {
     ...options,
     headers: {
@@ -15,6 +25,18 @@ async function authedFetch(url, options = {}) {
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
   })
+}
+
+// SSO Certilogia : valide les identifiants côté serveur et retourne une
+// session maison. Ne jette jamais silencieusement — readError() côté appelant.
+export async function loginWithCertilogia(email, password) {
+  const res = await fetch('/api/certilogia-login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password }),
+  })
+  if (!res.ok) throw await readError(res, 'Connexion impossible')
+  return res.json() // { token, email }
 }
 
 async function readError(res, fallback) {
@@ -112,17 +134,5 @@ export async function adminAction(payload) {
     body: JSON.stringify(payload),
   })
   if (!res.ok) throw await readError(res, "Échec de l'action admin")
-  return res.json()
-}
-
-// ── Import one-shot Firestore -> Neon (admin global) ─────────────────────────
-
-export async function importFirestoreLeaves(_actor, leaves) {
-  const res = await authedFetch('/api/import-firestore', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ leaves }),
-  })
-  if (!res.ok) throw await readError(res, "Échec de l'import")
   return res.json()
 }
