@@ -1,31 +1,15 @@
-import { createRemoteJWKSet, jwtVerify } from 'jose';
+import { verifySession } from './_session.js';
 
 // Authentification serveur : chaque requête API doit porter le jeton de
-// session Firebase (Authorization: Bearer <idToken>) — présent pour TOUS les
-// utilisateurs connectés (connexion Certilogia comprise, via le compte
-// miroir). Le jeton est vérifié par signature (JWKS Google), l'identité est
-// DÉRIVÉE du jeton — jamais du corps de la requête.
+// session maison (Authorization: Bearer <token>), signé par api/_session.js
+// après validation des identifiants Certilogia. L'identité est DÉRIVÉE du
+// jeton — jamais du corps de la requête.
 
-const PROJECT_ID = 'conges-certideal';
-const JWKS = createRemoteJWKSet(
-  new URL('https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com')
-);
-
-// Vérifie le jeton → { uid, email } | null.
 export async function getVerifiedUser(req, verifyOverride) {
   const m = /^Bearer\s+(.+)$/i.exec(req.headers?.authorization || '');
   if (!m) return null;
-  try {
-    if (verifyOverride) return await verifyOverride(m[1]);
-    const { payload } = await jwtVerify(m[1], JWKS, {
-      issuer: `https://securetoken.google.com/${PROJECT_ID}`,
-      audience: PROJECT_ID,
-    });
-    if (!payload.sub) return null;
-    return { uid: payload.sub, email: (payload.email || '').toLowerCase() };
-  } catch {
-    return null;
-  }
+  if (verifyOverride) return verifyOverride(m[1]);
+  return verifySession(m[1]);
 }
 
 // Jeton requis (profil pas encore nécessaire — ex. /api/roster au moment du

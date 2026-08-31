@@ -1,8 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { signOut } from 'firebase/auth'
-import { auth } from './firebase'
 import { useAuth } from './hooks/useAuth'
-import { fetchLeaves, fetchRosterBundle, addLeave, decideLeave, deleteLeave } from './api'
+import { fetchLeaves, fetchRosterBundle, addLeave, decideLeave, deleteLeave, clearSessionToken } from './api'
 import { canDecide, canSee, subtreeOf, isApprover, isGlobalAdmin } from './leavePolicy'
 import { sameName } from './utils/names'
 import Calendar from './components/Calendar'
@@ -15,7 +13,7 @@ import AdminPanel from './components/AdminPanel'
 import './App.css'
 
 export default function App() {
-  const { firebaseUser, profile, loading: authLoading } = useAuth()
+  const { authed, profile, loading: authLoading, refresh: refreshAuth } = useAuth()
   const [leaves, setLeaves] = useState([])
   const [employees, setEmployees] = useState([])
   const [config, setConfig] = useState({ globalAdmins: [], extraApprovers: {} })
@@ -85,17 +83,16 @@ export default function App() {
     !l.restricted && mySubtree.some(n => sameName(n, l.employee))
   )
 
-  async function handleLogout() {
-    await signOut(auth)
-    localStorage.removeItem('certilogia_token')
-    localStorage.removeItem('certilogia_user')
+  function handleLogout() {
+    clearSessionToken()
     setView('calendar')
     setLeaves([])
     setEmployees([])
+    refreshAuth()
   }
 
   function handleProfileSaved() {
-    window.location.reload()
+    refreshAuth()
   }
 
   async function handleSubmitLeave(leave) {
@@ -144,8 +141,8 @@ export default function App() {
 
   if (authLoading) return <div className="loading-state" style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>Chargement…</div>
 
-  if (!firebaseUser || !profile) return (
-    <AuthScreen firebaseUser={firebaseUser || null} onProfileSaved={handleProfileSaved} />
+  if (!authed || !profile) return (
+    <AuthScreen authed={!!authed} onProfileSaved={handleProfileSaved} />
   )
 
   // Liaison en attente de validation par un admin (email ≠ email RH).
@@ -245,13 +242,7 @@ export default function App() {
             />
           )}
           {view === 'team' && (
-            <TeamSettings
-              employees={employees}
-              config={config}
-              currentUser={user}
-              isGlobalAdmin={amGlobalAdmin}
-              onImported={loadAll}
-            />
+            <TeamSettings employees={employees} config={config} />
           )}
           {view === 'admin' && (amGlobalAdmin || canApprove) && (
             <AdminPanel

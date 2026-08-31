@@ -14,7 +14,6 @@
   "dependencies": {
     "@neondatabase/serverless": "^0.10.4",
     "date-fns": "^4.4.0",
-    "firebase": "^12.15.0",
     "jose": "^6.2.8",
     "postgres": "^3.4.9",
     "react": "^19.2.7",
