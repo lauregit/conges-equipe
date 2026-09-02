@@ -25,7 +25,7 @@ export const EXTRA_APPROVERS = {
 // équipe via canDecide). Identifiée par email de connexion (comme
 // BOOTSTRAP_ADMIN_EMAILS dans api/_config.js) plutôt que par nom, pour ne
 // pas dépendre d'un rattachement précis dans l'organigramme RH Compliance.
-export const RESTRICTED_TYPE_HR_EMAILS = ["manel@certideal.com", "fabien.g@certideal.com"]
+export const RESTRICTED_TYPE_HR_EMAILS = ["manel.rebhi@certideal.com", "fabien.g@certideal.com"]
 
 // Rétrocompat (ancien code)
 export const ADMIN_NAME = "Laure COHEN"
