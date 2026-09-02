@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { sendEmail, requestEmail, decisionEmail } from '../api/_notify.js'
+import { sendEmail, requestEmail, decisionEmail, directorsFyiEmail, reminderEmail } from '../api/_notify.js'
 
 const LEAVE = { employee: 'Lucas DOSSO', startDate: '2026-08-01', endDate: '2026-08-05', type: 'conge_paye', note: 'plage' }
 
@@ -86,5 +86,26 @@ describe('email templates', () => {
     expect(decisionEmail(LEAVE, 'approve', 'Marc').subject).toMatch(/approuvée/i)
     expect(decisionEmail(LEAVE, 'reject', 'Marc').subject).toMatch(/refusée/i)
     expect(decisionEmail(LEAVE, 'approve', 'Marc').text).toContain('Marc')
+  })
+
+  it('directorsFyiEmail is an FYI naming the employee and (optionally) who decided', () => {
+    const m = directorsFyiEmail(LEAVE, 'Vithusa VASIDDAN')
+    expect(m.subject).toContain('Lucas DOSSO')
+    expect(m.subject).toMatch(/validé/i)
+    expect(m.text).not.toMatch(/à approuver|approuver ou refuser/i)
+    expect(m.text).toContain('Vithusa VASIDDAN')
+  })
+
+  it('directorsFyiEmail omits the "par X" clause when nobody decided it (auto-déclaré)', () => {
+    const m = directorsFyiEmail(LEAVE, LEAVE.employee) // déclaré par soi-même
+    expect(m.text).not.toContain('saisi/validé par')
+  })
+
+  it('reminderEmail points back at a still-pending request and invites a decision', () => {
+    const m = reminderEmail(LEAVE)
+    expect(m.subject).toMatch(/rappel/i)
+    expect(m.text).toContain('Lucas DOSSO')
+    expect(m.text).toMatch(/48h/)
+    expect(m.text).toMatch(/approuver ou refuser/i)
   })
 })

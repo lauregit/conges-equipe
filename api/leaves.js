@@ -1,10 +1,13 @@
 import { neon } from '@neondatabase/serverless';
-import { LEAVE_TYPES } from '../src/constants.js';
-import { initialStatus, canDecide, canDecideLeave, isSpecialRequest, canSee, isGlobalAdmin, replacementPartners, replacementConflicts, ABSENCE_TYPES } from '../src/leavePolicy.js';
+import { LEAVE_TYPES, RESTRICTED_SUBMIT_TYPES, DECLARED_TYPES } from '../src/constants.js';
+import { initialStatus, canDecide, canDecideLeave, isSpecialRequest, canSee, isGlobalAdmin, approversForNotification, replacementPartners, replacementConflicts, ABSENCE_TYPES } from '../src/leavePolicy.js';
 import { findByName, sameName } from '../src/utils/names.js';
+import { RESTRICTED_TYPE_HR_EMAILS } from '../src/employees.js';
 import { loadRoster } from './_rhroster.js';
 import { requireProfile } from './_auth.js';
-import { loadConfig } from './_config.js';
+import { loadConfig, BOOTSTRAP_ADMIN_EMAILS } from './_config.js';
+import { sendEmail, requestEmail, decisionEmail, directorsFyiEmail } from './_notify.js';
+import { decisionRecipients } from './_recipients.js';
 
 // Congés dans Neon Postgres. SÉCURISÉ :
 // - chaque requête exige le jeton de session (identité vérifiée par
@@ -69,6 +72,58 @@ function parseBody(req, res) {
 // partagée (rh_entities + rh_org) via loadRoster — voir _rhroster.js.
 async function loadFullRoster(overrides) {
   return overrides.roster ? overrides.roster : loadRoster();
+}
+
+// Emails (annuaire RH) d'une liste de noms, en excluant `except` (souvent
+// l'auteur de l'action, déjà au courant) et les entrées sans email connu.
+function emailsFor(names, roster, except) {
+  const skip = except ? sameName.bind(null, except) : () => false;
+  return [...new Set(
+    (names || [])
+      .filter(n => !skip(n))
+      .map(n => findByName(roster, n)?.email)
+      .filter(Boolean)
+      .map(e => e.toLowerCase())
+  )];
+}
+
+// À la CRÉATION d'un congé :
+// - en attente  -> email "à valider" aux VRAIS décideurs (approversForNotification :
+//   n'inclut la direction que quand elle est la seule option, ex. le
+//   responsable d'équipe demande son propre congé).
+// - validé d'office (déclaré, ou saisi par un manager/la RH pour autrui)
+//   -> email d'information au(x) manager(s)/RH concerné(s) + à la direction
+//   systématiquement (visibilité — demande de Laure : direction informée
+//   de TOUT congé validé, quel que soit le type ou qui l'a saisi).
+async function notifyOnCreate(leave, { actor, actorEmail, roster, config, send = sendEmail }) {
+  if (leave.status === 'pending') {
+    const to = decisionRecipients(leave.employee, roster, config);
+    if (to.length) await send({ to, ...requestEmail(leave, 'pending') });
+    return;
+  }
+  const mode = DECLARED_TYPES.includes(leave.type) ? 'declared' : 'recorded';
+  const informNames = approversForNotification(leave.employee, roster, config);
+  const to = new Set(emailsFor(informNames, roster, null));
+  for (const email of BOOTSTRAP_ADMIN_EMAILS) to.add(email.toLowerCase());
+  // L'auteur n'a pas besoin d'un email pour sa propre action — exclu par
+  // son email de session ET par son email RH (peuvent différer : profil lié
+  // malgré un email de connexion ≠ email RH, cas géré en Admin).
+  if (actorEmail) to.delete(actorEmail.toLowerCase());
+  for (const email of emailsFor([actor], roster, null)) to.delete(email);
+  if (to.size) await send({ to: [...to], ...requestEmail(leave, mode) });
+}
+
+// À la DÉCISION : toujours informer le demandeur ; en cas d'APPROBATION,
+// informer aussi systématiquement la direction (visibilité).
+async function notifyOnDecide(leave, action, decidedBy, decidedByEmail, roster, send = sendEmail) {
+  const requesterEmail = findByName(roster, leave.employee)?.email;
+  if (requesterEmail && !sameName(decidedBy, leave.employee)) {
+    await send({ to: requesterEmail, ...decisionEmail(leave, action, decidedBy) });
+  }
+  if (action === 'approve') {
+    const to = BOOTSTRAP_ADMIN_EMAILS.filter(e => e.toLowerCase() !== (decidedByEmail || '').toLowerCase());
+    if (to.length) await send({ to, ...directorsFyiEmail(leave, decidedBy) });
+  }
 }
 
 export default async function handler(req, res, overrides = {}) {
@@ -141,10 +196,31 @@ export default async function handler(req, res, overrides = {}) {
         res.status(400).json({ error: 'Employé inconnu du personnel RH' });
         return;
       }
-      // Saisie pour autrui : réservé à son approbateur ou à un admin global.
+      // RH désignée (email — voir employees.js) : habilitée à saisir congé
+      // sans solde / arrêt maladie pour N'IMPORTE QUI, même hors de sa
+      // chaîne d'approbation habituelle (elle n'a pas vocation à approuver
+      // les autres types de congé).
+      const isRestrictedHR = RESTRICTED_SUBMIT_TYPES.includes(type) &&
+        RESTRICTED_TYPE_HR_EMAILS.includes((me.email || '').toLowerCase());
+
+      // Saisie pour autrui : réservé à son approbateur, à un admin global,
+      // ou à la RH désignée ci-dessus pour les deux types restreints.
       if (!sameName(actor, employee) &&
-          !canDecide(actor, employee, roster, config) && !isGlobalAdmin(actor, config)) {
+          !canDecide(actor, employee, roster, config) && !isGlobalAdmin(actor, config) && !isRestrictedHR) {
         res.status(403).json({ error: 'Vous ne pouvez pas saisir pour cette personne' });
+        return;
+      }
+
+      // Congé sans solde / arrêt maladie : jamais en libre-service, y
+      // compris pour SOI-même — réservé au responsable qui peut décider
+      // pour cette personne (son manager), à un admin global, ou à la RH
+      // désignée (canDecide exclut toujours l'auto-décision, donc un
+      // manager ne peut pas se l'auto-approuver via cette voie non plus).
+      if (RESTRICTED_SUBMIT_TYPES.includes(type) && !isGlobalAdmin(actor, config) && !isRestrictedHR &&
+          !(!sameName(actor, employee) && canDecide(actor, employee, roster, config))) {
+        res.status(403).json({
+          error: 'Congé sans solde et arrêt maladie : saisie réservée à votre responsable d’équipe ou au service RH — vous ne pouvez pas le déclarer vous-même.',
+        });
         return;
       }
 
@@ -174,6 +250,13 @@ export default async function handler(req, res, overrides = {}) {
       // direction — sauf si c'est justement un admin global qui la saisit.
       const special = isSpecialRequest({ startDate, endDate, type });
       let status = initialStatus({ type, employee, submittedBy: actor }, roster, config);
+      // La RH désignée (RESTRICTED_TYPE_HR_EMAILS) validant d'office comme
+      // le ferait n'importe quel manager saisissant pour son équipe — même
+      // quand elle n'est pas dans la chaîne d'approbation habituelle de
+      // cette personne (initialStatus ne le sait pas, elle raisonne par nom).
+      if (RESTRICTED_SUBMIT_TYPES.includes(type) && isRestrictedHR && !sameName(actor, employee)) {
+        status = 'approved';
+      }
       if (special && !isGlobalAdmin(actor, config)) status = 'pending';
       const decided = status === 'approved' && !sameName(actor, employee);
 
@@ -184,6 +267,16 @@ export default async function handler(req, res, overrides = {}) {
          RETURNING id::text`,
         [employee, startDate, endDate, type, note, status, actor, decided ? actor : null]
       );
+
+      // Emails — best-effort : ATTENDU (une fonction serverless peut être
+      // arrêtée juste après la réponse, un envoi "fire-and-forget" non
+      // attendu risquerait de ne jamais partir) mais son échec ne fait
+      // jamais échouer la requête (l'enregistrement du congé est déjà fait).
+      const newLeave = { id: rows[0].id, employee, startDate, endDate, type, note, status };
+      try {
+        await notifyOnCreate(newLeave, { actor, actorEmail: me.email, roster, config, send: overrides.sendEmail });
+      } catch (err) { console.error('notify create failed:', err); }
+
       res.status(201).json({ id: rows[0].id, status, special });
       return;
     }
@@ -228,6 +321,12 @@ export default async function handler(req, res, overrides = {}) {
         res.status(409).json({ error: 'Cette demande a déjà été traitée' });
         return;
       }
+
+      // Emails — best-effort (attendu, voir commentaire POST plus haut).
+      try {
+        await notifyOnDecide({ ...leave, status }, action, actor, me.email, roster, overrides.sendEmail);
+      } catch (err) { console.error('notify decide failed:', err); }
+
       res.status(200).json({ ok: true, status });
       return;
     }

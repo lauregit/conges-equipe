@@ -36,6 +36,7 @@ export async function sendEmail({ to, subject, text }, fetchImpl = fetch) {
 }
 
 const typeLabel = (t) => TYPE_META[t]?.label || t;
+const LINK = 'https://conges-equipe-beryl.vercel.app';
 
 function fmtRange(l) {
   return l.startDate === l.endDate ? `le ${l.startDate}` : `du ${l.startDate} au ${l.endDate}`;
@@ -75,6 +76,30 @@ export function decisionEmail(leave, action, decidedBy) {
   return {
     subject: `[Congés] Votre demande a été ${action === 'approve' ? 'approuvée' : 'refusée'}`,
     text: `Votre demande de congé (${type}) ${fmtRange(leave)} a été ${verdict} par ${decidedBy}.` +
-      `\n\nCalendrier : https://conges-equipe-beryl.vercel.app`,
+      `\n\nCalendrier : ${LINK}`,
+  };
+}
+
+// Visibilité systématique direction : envoyée à Laure & Yoann (voir
+// BOOTSTRAP_ADMIN_EMAILS, api/_config.js) dès qu'un congé, quel que soit son
+// type, est VALIDÉ — approuvé par un manager, déclaré (arrêt maladie), ou
+// enregistré directement (saisie manager/RH). Pure FYI, aucune action requise.
+export function directorsFyiEmail(leave, decidedBy) {
+  const type = typeLabel(leave.type);
+  const by = decidedBy && decidedBy !== leave.employee ? ` (saisi/validé par ${decidedBy})` : '';
+  return {
+    subject: `[Congés] ${leave.employee} — ${type} validé(e)`,
+    text: `${leave.employee} a un congé validé (${type}) ${fmtRange(leave)}${by}.` +
+      `\n\nCalendrier : ${LINK}`,
+  };
+}
+
+// Relance : une demande "pending" toujours sans décision après 48h.
+export function reminderEmail(leave) {
+  const type = typeLabel(leave.type);
+  return {
+    subject: `[Congés] Rappel — demande en attente depuis plus de 48h`,
+    text: `La demande de ${leave.employee} (${type}) ${fmtRange(leave)} attend toujours une décision` +
+      ` (plus de 48h).\n\nÀ approuver ou refuser ici : ${LINK}`,
   };
 }

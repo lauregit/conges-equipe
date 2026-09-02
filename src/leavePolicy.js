@@ -92,6 +92,29 @@ export function approversOf(employee, roster, config = DEFAULT_CONFIG) {
   return all.filter(n => n !== normName(employee))
 }
 
+// Qui NOTIFIER d'une demande "à valider" — distinct de approversOf : les
+// admins globaux peuvent TOUJOURS décider (sécurité/permission), mais on ne
+// veut pas les mettre en copie de chaque demande d'équipe. On ne les notifie
+// que quand ils sont les SEULS décideurs possibles (ex. le responsable
+// d'équipe demande son propre congé, ou personne n'est configuré comme
+// approbateur pour cette personne).
+export function approversForNotification(employee, roster, config = DEFAULT_CONFIG) {
+  const row = findByName(roster, employee)
+  let base = []
+  if (row?.rhSupervisor) {
+    base = [row.rhSupervisor]
+  } else {
+    const team = row?.team
+    const orgManagers = roster.filter(r => r.manager && r.team === team).map(r => r.name)
+    const extras = (team && (config.extraApprovers || {})[team]) || []
+    base = [...orgManagers, ...extras]
+  }
+  const nonSelf = base.filter(n => normName(n) !== normName(employee))
+  const deduped = [...new Map(nonSelf.map(n => [normName(n), n])).values()]
+  if (deduped.length > 0) return deduped
+  return (config.globalAdmins || []).filter(n => normName(n) !== normName(employee))
+}
+
 export function canDecide(actor, employee, roster, config = DEFAULT_CONFIG) {
   if (!actor || normName(actor) === normName(employee)) return false
   return approversOf(employee, roster, config).includes(normName(actor))

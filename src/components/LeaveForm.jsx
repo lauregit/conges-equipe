@@ -1,12 +1,12 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { format } from 'date-fns'
 import { doLeavesOverlap } from '../utils/dateHelpers'
-import { LEAVE_TYPES as TYPE_KEYS, TYPE_META, DECLARED_TYPES } from '../constants'
+import { LEAVE_TYPES as TYPE_KEYS, TYPE_META, DECLARED_TYPES, RESTRICTED_SUBMIT_TYPES } from '../constants'
 import { initialStatus, isSpecialRequest, replacementConflicts } from '../leavePolicy'
 import { sameName } from '../utils/names'
 const LEAVE_TYPES = TYPE_KEYS.map(key => ({ key, label: `${TYPE_META[key].emoji} ${TYPE_META[key].label}` }))
 
-export default function LeaveForm({ onSubmit, onCancel, currentUser, isSuperAdmin, visibleEmployees = [], myLeaves = [], allLeaves = [], roster = [], config }) {
+export default function LeaveForm({ onSubmit, onCancel, currentUser, isSuperAdmin, amGlobalAdmin = false, amRestrictedHR = false, visibleEmployees = [], myLeaves = [], allLeaves = [], roster = [], config }) {
   const today = format(new Date(), 'yyyy-MM-dd')
   // Super admins can fill in for anyone
   const [actingFor, setActingFor] = useState(currentUser)
@@ -15,6 +15,14 @@ export default function LeaveForm({ onSubmit, onCancel, currentUser, isSuperAdmi
   const [type, setType] = useState('conge_paye')
   const [note, setNote] = useState('')
   const [submitting, setSubmitting] = useState(false)
+
+  // Congé sans solde / arrêt maladie : jamais en libre-service — seulement
+  // en tant que manager saisissant POUR quelqu'un d'autre, admin global, ou
+  // RH désignée (voir api/leaves.js, même règle appliquée côté serveur).
+  const restrictedTypesAllowed = amGlobalAdmin || amRestrictedHR || actingFor !== currentUser
+  useEffect(() => {
+    if (!restrictedTypesAllowed && RESTRICTED_SUBMIT_TYPES.includes(type)) setType('conge_paye')
+  }, [restrictedTypesAllowed, type])
 
   // Leaves for whoever we're acting for (to detect overlaps)
   const targetLeaves = isSuperAdmin
@@ -71,18 +79,29 @@ export default function LeaveForm({ onSubmit, onCancel, currentUser, isSuperAdmi
           <div className="form-group">
             <label>Type de congé</label>
             <div className="leave-types">
-              {LEAVE_TYPES.map(lt => (
-                <button
-                  key={lt.key}
-                  type="button"
-                  className={`leave-type-btn ${type === lt.key ? 'selected' : ''}`}
-                  aria-pressed={type === lt.key}
-                  onClick={() => setType(lt.key)}
-                >
-                  {lt.label}
-                </button>
-              ))}
+              {LEAVE_TYPES.map(lt => {
+                const disabled = RESTRICTED_SUBMIT_TYPES.includes(lt.key) && !restrictedTypesAllowed
+                return (
+                  <button
+                    key={lt.key}
+                    type="button"
+                    className={`leave-type-btn ${type === lt.key ? 'selected' : ''}`}
+                    aria-pressed={type === lt.key}
+                    disabled={disabled}
+                    title={disabled ? 'À faire remplir par votre responsable d’équipe ou le service RH' : undefined}
+                    onClick={() => setType(lt.key)}
+                  >
+                    {lt.label}
+                  </button>
+                )
+              })}
             </div>
+            {!restrictedTypesAllowed && (
+              <p className="team-hint" style={{ marginTop: 6 }}>
+                Congé sans solde et arrêt maladie : à faire remplir par votre responsable
+                d’équipe ou le service RH — vous ne pouvez pas les déclarer vous-même.
+              </p>
+            )}
           </div>
 
           <div className="form-row">
