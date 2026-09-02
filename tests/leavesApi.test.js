@@ -171,7 +171,7 @@ describe('POST — congé sans solde / arrêt maladie : jamais en libre-service'
   it('la RH désignée par email peut le saisir pour N’IMPORTE QUI, même hors de sa chaîne → approved d’office', async () => {
     const { res } = await call(
       { method: 'POST', body: { ...restricted, employee: 'Salvatore MACRI' } },
-      { as: 'Manel RH', email: 'manel@certideal.com' }
+      { as: 'Manel RH', email: 'manel.rebhi@certideal.com' }
     )
     expect(res.statusCode).toBe(201)
     expect(res.body.status).toBe('approved')
