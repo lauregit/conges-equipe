@@ -3,6 +3,7 @@ import { useAuth } from './hooks/useAuth'
 import { fetchLeaves, fetchRosterBundle, addLeave, decideLeave, deleteLeave, clearSessionToken } from './api'
 import { canDecide, canSee, subtreeOf, isApprover, isGlobalAdmin } from './leavePolicy'
 import { sameName } from './utils/names'
+import { RESTRICTED_TYPE_HR_EMAILS } from './employees'
 import Calendar from './components/Calendar'
 import AuthScreen from './components/AuthScreen'
 import LeaveForm from './components/LeaveForm'
@@ -56,14 +57,19 @@ export default function App() {
   const me = employees.find(e => sameName(e.name, user)) || null
   const amGlobalAdmin = user ? isGlobalAdmin(user, config) : false
   const canApprove = user ? isApprover(user, employees, config) : false
+  // RH désignée (congé sans solde / arrêt maladie pour n'importe qui, voir
+  // employees.js et RESTRICTED_SUBMIT_TYPES) — identifiée par email RH
+  // (doit correspondre à l'email de connexion, cf. api/profile.js).
+  const amRestrictedHR = !!me?.email &&
+    RESTRICTED_TYPE_HR_EMAILS.some(e => e.toLowerCase() === me.email.toLowerCase())
   const myLeaves = leaves.filter(l => sameName(l.employee, user))
 
   // Périmètre : soi-même + son SOUS-ARBRE (chaîne de commandement).
-  // Les admins globaux voient tout.
+  // Les admins globaux et la RH désignée (elle saisit pour n'importe qui) voient tout.
   const mySubtree = user ? subtreeOf(user, employees, config) : []
-  const visibleEmployees = employees.filter(e =>
-    sameName(e.name, user) || mySubtree.some(n => sameName(n, e.name))
-  )
+  const visibleEmployees = (amGlobalAdmin || amRestrictedHR)
+    ? employees
+    : employees.filter(e => sameName(e.name, user) || mySubtree.some(n => sameName(n, e.name)))
   const visibleEmployeeNames = visibleEmployees.map(e => e.name)
 
   // Congés en clair de mon périmètre (le serveur ne fournit de toute façon
@@ -256,7 +262,9 @@ export default function App() {
           {view === 'request' && (
             <LeaveForm
               currentUser={user}
-              isSuperAdmin={canApprove || amGlobalAdmin}
+              isSuperAdmin={canApprove || amGlobalAdmin || amRestrictedHR}
+              amGlobalAdmin={amGlobalAdmin}
+              amRestrictedHR={amRestrictedHR}
               visibleEmployees={visibleEmployeeNames}
               myLeaves={myLeaves}
               allLeaves={leaves}

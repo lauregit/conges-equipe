@@ -136,3 +136,13 @@ export async function adminAction(payload) {
   if (!res.ok) throw await readError(res, "Échec de l'action admin")
   return res.json()
 }
+
+// Export variables de paie (admins globaux) : CSV pour la période donnée.
+// Retourne { blob, filename } — à l'appelant de déclencher le téléchargement.
+export async function exportPayroll(from, to) {
+  const res = await authedFetch(`/api/payroll-export?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`)
+  if (!res.ok) throw await readError(res, "Impossible de générer l'export paie")
+  const disposition = res.headers.get('Content-Disposition') || ''
+  const filename = /filename="([^"]+)"/.exec(disposition)?.[1] || `variables-paie_${from}_${to}.csv`
+  return { blob: await res.blob(), filename }
+}

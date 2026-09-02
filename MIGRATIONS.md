@@ -48,6 +48,34 @@ tous `team='Marketing'`, emails vides (à renseigner dans l'onglet **Équipe**).
 en ligne ignore simplement les nouvelles colonnes/table, donc pas de rupture
 pendant la fenêtre de déploiement).
 
+> ⚠️ **Ce document a pris du retard** : plusieurs migrations appliquées entre
+> juillet et août (colonnes `submitted_by`, tables `conges_profiles`,
+> `conges_settings`, `rh_org` côté RH Compliance, etc. — voir l'historique
+> Git des PR #5 à #14) n'ont pas été journalisées ici. À reconstituer/
+> vérifier à l'occasion en comparant avec le schéma réel sur Neon.
+
+## 2026-09-01 — v3 : relance automatique à 48h (PR à venir)
+
+```sql
+ALTER TABLE conges_leaves ADD COLUMN IF NOT EXISTS reminded_at TIMESTAMPTZ;
+```
+
+Utilisée par `api/cron-reminders.js` (déclenché par le cron Vercel défini
+dans `vercel.json`) : une demande `pending` depuis plus de 48h et jamais
+relancée (`reminded_at IS NULL`) reçoit un email de rappel, puis
+`reminded_at` est posé — une seule relance par demande.
+
+**Statut : ⏳ à appliquer sur Neon avant de déployer ce changement** (idempotent,
+sans rupture — l'ancien code ignore simplement la colonne).
+
+**Configuration Vercel requise avant activation :**
+- `CRON_SECRET` (nouvelle variable) : n'importe quelle chaîne aléatoire —
+  protège l'endpoint (voir commentaire dans `api/cron-reminders.js`).
+- Le plan Vercel doit autoriser une fréquence de cron de 6h (`0 */6 * * *`) —
+  sur le plan Hobby, Vercel Cron est limité à une exécution par jour ; sur ce
+  plan, changer `vercel.json` pour `"schedule": "0 8 * * *"` (une fois par
+  jour, 8h UTC) plutôt que toutes les 6h.
+
 ## Ordre de déploiement
 
 1. Appliquer le SQL sur Neon (idempotent, sans rupture pour l'ancien code).

@@ -20,5 +20,12 @@ export const EXTRA_APPROVERS = {
   // "Logistique": [], "Marketing": [], "Tech": [], "Data": [],
 }
 
+// RH habilitée à saisir un congé sans solde / arrêt maladie pour N'IMPORTE
+// QUI (en plus des responsables d'équipe, qui peuvent le faire pour LEUR
+// équipe via canDecide). Identifiée par email de connexion (comme
+// BOOTSTRAP_ADMIN_EMAILS dans api/_config.js) plutôt que par nom, pour ne
+// pas dépendre d'un rattachement précis dans l'organigramme RH Compliance.
+export const RESTRICTED_TYPE_HR_EMAILS = ["manel@certideal.com", "fabien.g@certideal.com"]
+
 // Rétrocompat (ancien code)
 export const ADMIN_NAME = "Laure COHEN"

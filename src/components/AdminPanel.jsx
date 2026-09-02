@@ -1,7 +1,17 @@
 import { useState, useEffect, useCallback } from 'react'
-import { fetchAdmin, adminAction } from '../api'
+import { fetchAdmin, adminAction, exportPayroll } from '../api'
 import { sameName, normName } from '../utils/names'
 import { chainOf, canSee } from '../leavePolicy'
+
+// Mois précédent, au format YYYY-MM-DD (bornes) — période par défaut la plus
+// utile pour un export de paie (le mois qui vient de se terminer).
+function previousMonthRange() {
+  const now = new Date()
+  const from = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1))
+  const to = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 0))
+  const iso = (d) => d.toISOString().slice(0, 10)
+  return { from: iso(from), to: iso(to) }
+}
 
 // ⚙️ Administration (admins globaux) :
 // 1. Comptes : liaisons compte→nom en attente (email ≠ email RH) à valider,
@@ -18,6 +28,29 @@ export default function AdminPanel({ employees, currentUser, isGlobalAdmin = fal
   const [busy, setBusy] = useState(null)
   const [filter, setFilter] = useState('')
   const [adminsDraft, setAdminsDraft] = useState(null)
+  const [payrollRange, setPayrollRange] = useState(previousMonthRange)
+  const [payrollBusy, setPayrollBusy] = useState(false)
+  const [payrollError, setPayrollError] = useState('')
+
+  async function handleExportPayroll() {
+    setPayrollBusy(true)
+    setPayrollError('')
+    try {
+      const { blob, filename } = await exportPayroll(payrollRange.from, payrollRange.to)
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = filename
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+    } catch (err) {
+      setPayrollError(err.message || "Échec de l'export")
+    } finally {
+      setPayrollBusy(false)
+    }
+  }
 
   const load = useCallback(async () => {
     try {
@@ -174,6 +207,43 @@ export default function AdminPanel({ employees, currentUser, isGlobalAdmin = fal
           {shown.map(hierRow)}
         </div>
       </div>
+
+      {isGlobalAdmin && <div className="presence-team">
+        <h3>📤 Export variables de paie</h3>
+        <p className="team-hint">
+          CSV pour le responsable paie : jours de congé payé, sans solde et arrêt
+          maladie APPROUVÉS par salarié, sur la période choisie (télétravail exclu).
+        </p>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <label style={{ display: 'flex', flexDirection: 'column', fontSize: 12 }}>
+            Du
+            <input
+              type="date"
+              value={payrollRange.from}
+              onChange={e => setPayrollRange(r => ({ ...r, from: e.target.value }))}
+              aria-label="Début de période paie"
+            />
+          </label>
+          <label style={{ display: 'flex', flexDirection: 'column', fontSize: 12 }}>
+            Au
+            <input
+              type="date"
+              value={payrollRange.to}
+              onChange={e => setPayrollRange(r => ({ ...r, to: e.target.value }))}
+              aria-label="Fin de période paie"
+            />
+          </label>
+          <button
+            className="btn-primary"
+            style={{ marginTop: 16 }}
+            disabled={payrollBusy || payrollRange.from > payrollRange.to}
+            onClick={handleExportPayroll}
+          >
+            {payrollBusy ? 'Génération…' : 'Télécharger le CSV'}
+          </button>
+        </div>
+        {payrollError && <p className="auth-error">{payrollError}</p>}
+      </div>}
 
       {isGlobalAdmin && <div className="presence-team">
         <h3>Admins globaux</h3>

@@ -4,10 +4,10 @@ import handler from '../api/leaves.js'
 // Roster fixture (chaîne : Eden -> superviseur RH Vithusa).
 // Eden et Lucas sont binômes de remplacement (lien rh_org, un seul sens suffit).
 const ROSTER = [
-  { name: 'Vithusa VASIDDAN', team: 'Customer Success', manager: false, supervisor: null, rhSupervisor: null, replacements: [] },
-  { name: 'Eden KTORZA', team: 'Customer Success', manager: false, supervisor: 'Vithusa VASIDDAN', rhSupervisor: 'Vithusa VASIDDAN', replacements: ['Lucas DOSSO'] },
-  { name: 'Lucas DOSSO', team: 'Marketing', manager: true, supervisor: null, rhSupervisor: null, replacements: [] },
-  { name: 'Salvatore MACRI', team: 'Marketing', manager: false, supervisor: null, rhSupervisor: null, replacements: [] },
+  { name: 'Vithusa VASIDDAN', team: 'Customer Success', manager: false, supervisor: null, rhSupervisor: null, replacements: [], email: 'vithusa@certideal.com' },
+  { name: 'Eden KTORZA', team: 'Customer Success', manager: false, supervisor: 'Vithusa VASIDDAN', rhSupervisor: 'Vithusa VASIDDAN', replacements: ['Lucas DOSSO'], email: 'eden@certideal.com' },
+  { name: 'Lucas DOSSO', team: 'Marketing', manager: true, supervisor: null, rhSupervisor: null, replacements: [], email: 'lucas@certideal.com' },
+  { name: 'Salvatore MACRI', team: 'Marketing', manager: false, supervisor: null, rhSupervisor: null, replacements: [], email: 'salvatore@certideal.com' },
 ]
 
 const CONFIG = { extraApprovers: {}, globalAdmins: ['Laure COHEN', 'Yoann VALENSI'] }
@@ -50,19 +50,21 @@ function mockRes() {
 }
 
 // `as` = nom du profil authentifié (identité vérifiée simulée).
-async function call(req, { as = 'Eden KTORZA', sqlOpts = {}, noToken = false, pendingProfile = false } = {}) {
+async function call(req, { as = 'Eden KTORZA', sqlOpts = {}, noToken = false, pendingProfile = false, email = 'x@certideal.com', roster = ROSTER } = {}) {
   const res = mockRes()
   const sql = makeDb({
     ...sqlOpts,
     profiles: { 'uid-1': { name: as, status: pendingProfile ? 'pending' : 'approved' } },
   })
-  const verify = noToken ? async () => null : async () => ({ uid: 'uid-1', email: 'x@certideal.com' })
+  const verify = noToken ? async () => null : async () => ({ uid: 'uid-1', email })
+  const sentEmails = []
+  const sendEmail = async (msg) => { sentEmails.push(msg); return true }
   await handler(
     { headers: { authorization: noToken ? '' : 'Bearer fake' }, ...req },
     res,
-    { sql, roster: ROSTER, config: CONFIG, verify: noToken ? undefined : verify }
+    { sql, roster, config: CONFIG, verify: noToken ? undefined : verify, sendEmail }
   )
-  return { res, sql }
+  return { res, sql, sentEmails }
 }
 
 const valid = { startDate: '2026-09-01', endDate: '2026-09-05', type: 'conge_paye' }
@@ -145,6 +147,97 @@ describe('POST — identité du jeton, policy serveur', () => {
       const { res } = await call({ method: 'POST', body })
       expect(res.statusCode, JSON.stringify(body)).toBe(400)
     }
+  })
+})
+
+describe('POST — congé sans solde / arrêt maladie : jamais en libre-service', () => {
+  const restricted = { ...valid, type: 'conge_sans_solde' }
+
+  it('un salarié ne peut pas se le déclarer lui-même → 403', async () => {
+    const { res } = await call({ method: 'POST', body: restricted }, { as: 'Eden KTORZA' })
+    expect(res.statusCode).toBe(403)
+    expect(res.body.error).toMatch(/responsable d’équipe|service RH/)
+  })
+
+  it('le superviseur RH peut le saisir pour son N-1 → approved d’office', async () => {
+    const { res } = await call(
+      { method: 'POST', body: { ...restricted, employee: 'Eden KTORZA' } },
+      { as: 'Vithusa VASIDDAN' }
+    )
+    expect(res.statusCode).toBe(201)
+    expect(res.body.status).toBe('approved')
+  })
+
+  it('la RH désignée par email peut le saisir pour N’IMPORTE QUI, même hors de sa chaîne → approved d’office', async () => {
+    const { res } = await call(
+      { method: 'POST', body: { ...restricted, employee: 'Salvatore MACRI' } },
+      { as: 'Manel RH', email: 'manel@certideal.com' }
+    )
+    expect(res.statusCode).toBe(201)
+    expect(res.body.status).toBe('approved')
+  })
+
+  it('un admin global peut toujours le saisir, même hors de sa chaîne', async () => {
+    const { res } = await call(
+      { method: 'POST', body: { ...restricted, employee: 'Salvatore MACRI' } },
+      { as: 'Yoann VALENSI' }
+    )
+    expect(res.statusCode).toBe(201)
+  })
+
+  it('un manager ne peut pas se le déclarer à lui-même (canDecide exclut l’auto-décision)', async () => {
+    const { res } = await call({ method: 'POST', body: restricted }, { as: 'Lucas DOSSO' })
+    expect(res.statusCode).toBe(403)
+  })
+
+  it('arrêt maladie : même règle (déclaration libre supprimée)', async () => {
+    const { res } = await call({ method: 'POST', body: { ...valid, type: 'arret_maladie' } }, { as: 'Eden KTORZA' })
+    expect(res.statusCode).toBe(403)
+  })
+})
+
+describe('POST/PATCH — notifications email', () => {
+  it('demande en attente → email aux vrais approbateurs (pas à la direction)', async () => {
+    const { sentEmails } = await call({ method: 'POST', body: valid }) // Eden, superviseur RH = Vithusa
+    expect(sentEmails).toHaveLength(1)
+    expect(sentEmails[0].to).toEqual(['vithusa@certideal.com'])
+    expect(sentEmails[0].subject).toMatch(/à approuver/i)
+  })
+
+  it('demande d’un responsable d’équipe pour lui-même → direction uniquement (aucun autre manager du pôle)', async () => {
+    const { sentEmails } = await call({ method: 'POST', body: valid }, { as: 'Lucas DOSSO' })
+    expect(sentEmails).toHaveLength(1)
+    expect(sentEmails[0].to.sort()).toEqual(['laure@certideal.com', 'yoann@certideal.com'])
+  })
+
+  it('congé validé d’office (saisi par le manager) → info au reste de la chaîne + direction, pas à l’auteur', async () => {
+    const { sentEmails } = await call(
+      { method: 'POST', body: { ...valid, type: 'conge_sans_solde', employee: 'Eden KTORZA' } },
+      { as: 'Vithusa VASIDDAN' } // Vithusa est le superviseur RH d'Eden
+    )
+    expect(sentEmails).toHaveLength(1)
+    // Vithusa a saisi elle-même -> exclue des destinataires ; direction toujours en copie.
+    expect(sentEmails[0].to.sort()).toEqual(['laure@certideal.com', 'yoann@certideal.com'])
+  })
+
+  it('PATCH approve → email au demandeur + à la direction (sauf le décideur lui-même)', async () => {
+    const { sentEmails } = await call(
+      { method: 'PATCH', query: { id: '7' }, body: { action: 'approve' } },
+      { as: 'Vithusa VASIDDAN', sqlOpts: { byId: [PENDING] } }
+    )
+    expect(sentEmails).toHaveLength(2)
+    const [toRequester, toDirection] = sentEmails
+    expect(toRequester.to).toBe('eden@certideal.com')
+    expect(toDirection.to.sort()).toEqual(['laure@certideal.com', 'yoann@certideal.com'])
+  })
+
+  it('PATCH reject → email au demandeur seulement (pas de visibilité direction)', async () => {
+    const { sentEmails } = await call(
+      { method: 'PATCH', query: { id: '7' }, body: { action: 'reject' } },
+      { as: 'Vithusa VASIDDAN', sqlOpts: { byId: [PENDING] } }
+    )
+    expect(sentEmails).toHaveLength(1)
+    expect(sentEmails[0].to).toBe('eden@certideal.com')
   })
 })
 

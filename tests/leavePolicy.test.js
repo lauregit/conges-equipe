@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
-  approversOf, canDecide, isApprover, initialStatus,
+  approversOf, approversForNotification, canDecide, isApprover, initialStatus,
   chainOf, subtreeOf, canSee, isGlobalAdmin, MAX_CHAIN,
   leaveDayCount, isSpecialRequest, canDecideLeave,
   replacementPartners, replacementConflicts, ABSENCE_TYPES,
@@ -105,12 +105,52 @@ describe('approbation — superviseur RH désigné', () => {
     expect(canDecide('Vithusa VASIDDAN', 'Vithusa VASIDDAN', ROSTER, CONFIG)).toBe(false)
   })
 
+  it('un responsable d’équipe demandant pour lui-même : seule la direction peut décider (Laure/Yoann)', () => {
+    // Andrea LEVY est seule manager de son pôle, sans superviseur RH — sa
+    // propre demande ne peut être décidée que par la direction, jamais par
+    // un pair du pôle (inexistant ici, mais la règle doit tenir même s'il y
+    // en avait un : elle-même est toujours exclue de sa propre chaîne).
+    expect(canDecide('Laure COHEN', 'Andrea LEVY', ROSTER, CONFIG)).toBe(true)
+    expect(canDecide('Yoann VALENSI', 'Andrea LEVY', ROSTER, CONFIG)).toBe(true)
+    expect(canDecide('Andrea LEVY', 'Andrea LEVY', ROSTER, CONFIG)).toBe(false)
+    expect(approversOf('Andrea LEVY', ROSTER, CONFIG).sort()).toEqual(
+      [normName('Laure COHEN'), normName('Yoann VALENSI')].sort()
+    )
+  })
+
   it('isApprover : superviseur RH, manager organigramme, N+1 avec sous-arbre, admin', () => {
     expect(isApprover('Vithusa VASIDDAN', ROSTER, CONFIG)).toBe(true) // superviseur RH + sous-arbre
     expect(isApprover('Apolline SARAGONI', ROSTER, CONFIG)).toBe(true) // sous-arbre (Eden)
     expect(isApprover('Lucas DOSSO', ROSTER, CONFIG)).toBe(true) // manager organigramme
     expect(isApprover('Eden KTORZA', ROSTER, CONFIG)).toBe(false)
     expect(isApprover('Laure COHEN', ROSTER, CONFIG)).toBe(true)
+  })
+})
+
+describe('approversForNotification — qui reçoit l’email "à valider"', () => {
+  it('cas normal : le vrai décideur seulement, PAS la direction (pas de spam sur chaque demande)', () => {
+    expect(approversForNotification('Eden KTORZA', ROSTER, CONFIG)).toEqual(['Vithusa VASIDDAN'])
+  })
+
+  it('responsable d’équipe demandant pour lui-même : repli exclusif sur la direction', () => {
+    // Andrea LEVY est le seul manager de son pôle, sans superviseur RH —
+    // approversOf inclut Laure/Yoann (admins globaux) MAIS aussi elle-même
+    // se filtrerait ; approversForNotification doit tomber uniquement sur
+    // Laure/Yoann, jamais sur un autre pair du pôle inexistant ici.
+    expect(approversForNotification('Andrea LEVY', ROSTER, CONFIG).map(normName).sort())
+      .toEqual([normName('Laure COHEN'), normName('Yoann VALENSI')].sort())
+  })
+
+  it('personne configuré comme approbateur : repli sur la direction', () => {
+    expect(approversForNotification('Hanna BOICHUK', ROSTER, CONFIG).map(normName).sort())
+      .toEqual([normName('Laure COHEN'), normName('Yoann VALENSI')].sort())
+  })
+
+  it('reste cohérent avec approversOf : jamais quelqu’un qui ne PEUT pas décider', () => {
+    const employee = 'Eden KTORZA'
+    const notif = approversForNotification(employee, ROSTER, CONFIG)
+    const allowed = approversOf(employee, ROSTER, CONFIG)
+    for (const n of notif) expect(allowed).toContain(normName(n))
   })
 })
 

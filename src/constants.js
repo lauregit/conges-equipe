@@ -7,6 +7,12 @@ export const LEAVE_TYPES = ['conge_paye', 'conge_sans_solde', 'teletravail', 'ar
 // rather than REQUESTED (pending until a manager approves).
 export const DECLARED_TYPES = ['arret_maladie']
 
+// Types dont la SAISIE (pas seulement l'approbation) est réservée aux
+// responsables d'équipe et à RESTRICTED_TYPE_HR_EMAILS (src/employees.js) —
+// jamais en libre-service par le salarié pour lui-même. Voir
+// leavePolicy.js / api/leaves.js pour l'application de la règle.
+export const RESTRICTED_SUBMIT_TYPES = ['conge_sans_solde', 'arret_maladie']
+
 // Durée maximale d'une demande "normale" (jours calendaires consécutifs, bornes
 // incluses). Au-delà, c'est une DEMANDE SPÉCIALE : validable uniquement par la
 // direction (admins globaux), jamais par le superviseur RH habituel.
