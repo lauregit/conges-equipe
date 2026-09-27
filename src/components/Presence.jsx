@@ -1,9 +1,10 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { format, parseISO } from 'date-fns'
 import { fr } from 'date-fns/locale'
 import { isDateInRange } from '../utils/dateHelpers'
 import { TYPE_META } from '../constants'
-import { sameName } from '../utils/names'
+import { normName, sameName } from '../utils/names'
+import { indexLeavesByEmployee } from '../utils/leaveIndex'
 
 // Vue Présence : pour un jour donné, qui est présent / absent dans chaque équipe.
 // `visibleTeams` est calculé par App.jsx :
@@ -12,17 +13,17 @@ import { sameName } from '../utils/names'
 export default function Presence({ employees, leaves, currentUser, visibleTeams = [], showFilter = false }) {
   const [date, setDate] = useState(format(new Date(), 'yyyy-MM-dd'))
   const [teamFilter, setTeamFilter] = useState('')
+  const leavesByEmployee = useMemo(() => indexLeavesByEmployee(leaves), [leaves])
 
   const active = employees.filter(e => e.active)
   const shownTeams = (teamFilter ? [teamFilter] : visibleTeams).filter(t => visibleTeams.includes(t))
 
   function statusFor(name) {
-    const onLeave = leaves.find(l =>
-      sameName(l.employee, name) && l.status === 'approved' && isDateInRange(date, l.startDate, l.endDate)
+    const employeeLeaves = leavesByEmployee.get(normName(name)) || []
+    const onLeave = employeeLeaves.find(l => l.status === 'approved' && isDateInRange(date, l.startDate, l.endDate)
     )
     if (onLeave) return { kind: 'absent', leave: onLeave }
-    const pending = leaves.find(l =>
-      sameName(l.employee, name) && l.status === 'pending' && isDateInRange(date, l.startDate, l.endDate)
+    const pending = employeeLeaves.find(l => l.status === 'pending' && isDateInRange(date, l.startDate, l.endDate)
     )
     if (pending) return { kind: 'pending', leave: pending }
     return { kind: 'present' }

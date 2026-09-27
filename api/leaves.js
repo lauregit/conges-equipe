@@ -1,7 +1,7 @@
 import { neon } from '@neondatabase/serverless';
 import { LEAVE_TYPES, RESTRICTED_SUBMIT_TYPES, DECLARED_TYPES } from '../src/constants.js';
 import { initialStatus, canDecide, canDecideLeave, isSpecialRequest, canSee, isGlobalAdmin, approversForNotification, replacementPartners, replacementConflicts, ABSENCE_TYPES } from '../src/leavePolicy.js';
-import { findByName, sameName } from '../src/utils/names.js';
+import { findByName, sameName, normName } from '../src/utils/names.js';
 import { RESTRICTED_TYPE_HR_EMAILS } from '../src/employees.js';
 import { loadRoster } from './_rhroster.js';
 import { requireProfile } from './_auth.js';
@@ -145,11 +145,17 @@ export default async function handler(req, res, overrides = {}) {
     const config = overrides.config || await loadConfig(sql);
 
     if (req.method === 'GET') {
-      const rows = await sql(SELECT + ' ORDER BY start_date, id');
-      const roster = await loadFullRoster(overrides);
+      const [rows, roster] = await Promise.all([
+        sql(SELECT + ' ORDER BY start_date, id'),
+        loadFullRoster(overrides),
+      ]);
+      // Request-local only: never retain permissions after roster/config changes.
+      const visibility = new Map();
       const scoped = rows
         .map(l => {
-          if (canSee(actor, l.employee, roster, config)) return l;
+          const key = normName(l.employee);
+          if (!visibility.has(key)) visibility.set(key, canSee(actor, l.employee, roster, config));
+          if (visibility.get(key)) return l;
           // Hors périmètre : silhouette minimale (présence/calendrier),
           // uniquement les congés approuvés, sans type ni note.
           if (l.status !== 'approved') return null;

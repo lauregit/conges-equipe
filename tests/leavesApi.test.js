@@ -312,3 +312,17 @@ describe('DELETE', () => {
     expect((await del('Vithusa VASIDDAN')).res.statusCode).toBe(403)
   })
 })
+
+describe('GET permission freshness with repeated employee rows', () => {
+  it('does not reuse visibility across users or roster changes', async () => {
+    const rows = [PENDING, { ...PENDING, id: '8', employee: ' EDEN ktorza ', status: 'approved', note: 'private' }]
+    const manager = await call({ method: 'GET' }, { as: 'Vithusa VASIDDAN', sqlOpts: { list: rows } })
+    expect(manager.res.body).toEqual(rows)
+    const outsider = await call({ method: 'GET' }, { as: 'Salvatore MACRI', sqlOpts: { list: rows } })
+    expect(outsider.res.body).toHaveLength(1)
+    expect(outsider.res.body[0]).toMatchObject({ restricted: true, note: null, type: null })
+    const changedRoster = ROSTER.map(r => ({ ...r, supervisor: null, rhSupervisor: null }))
+    const formerManager = await call({ method: 'GET' }, { as: 'Vithusa VASIDDAN', roster: changedRoster, sqlOpts: { list: rows } })
+    expect(formerManager.res.body).toEqual(outsider.res.body)
+  })
+})
