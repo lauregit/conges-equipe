@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import {
   startOfMonth, endOfMonth, eachDayOfInterval,
   startOfWeek, endOfWeek, addMonths, subMonths,
@@ -7,7 +7,8 @@ import {
 import { fr } from 'date-fns/locale'
 import { TYPE_META, FALLBACK_TYPE_META } from '../constants'
 import { isDateInRange, leaveOverlapsMonth } from '../utils/dateHelpers'
-import { sameName } from '../utils/names'
+import { normName, sameName } from '../utils/names'
+import { indexLeavesByEmployee } from '../utils/leaveIndex'
 
 const STATUS_LABELS = {
   pending: 'En attente',
@@ -17,10 +18,10 @@ const STATUS_LABELS = {
 
 // Grid shows approved leaves solid and pending ones hatched with a “?”;
 // rejected leaves never appear on the grid (only in the lists, badged).
-function isOnLeave(employee, date, leaves) {
+function isOnLeave(date, leaves) {
   const d = format(date, 'yyyy-MM-dd')
   return leaves.find(l =>
-    sameName(l.employee, employee) && l.status !== 'rejected' &&
+    l.status !== 'rejected' &&
     isDateInRange(d, l.startDate, l.endDate)
   )
 }
@@ -30,6 +31,7 @@ function isOnLeave(employee, date, leaves) {
 export default function Calendar({ leaves, employees, currentUser, isAdmin, onDelete }) {
   const [month, setMonth] = useState(new Date())
   const [teamFilter, setTeamFilter] = useState('')
+  const leavesByEmployee = useMemo(() => indexLeavesByEmployee(leaves), [leaves])
 
   const monthStart = startOfMonth(month)
   const monthEnd = endOfMonth(month)
@@ -112,7 +114,7 @@ export default function Calendar({ leaves, employees, currentUser, isAdmin, onDe
 
             {/* Employee rows */}
             {roster.map(emp => {
-              const empLeaves = week.map(day => isOnLeave(emp.name, day, leaves))
+              const empLeaves = week.map(day => isOnLeave(day, leavesByEmployee.get(normName(emp.name)) || []))
               const hasLeave = empLeaves.some(Boolean)
               if (!hasLeave && !isSameMonth(week[3], month)) return null
 
